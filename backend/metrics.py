@@ -37,11 +37,43 @@ def _derive(energy_wh: float, cost_inr: float) -> dict:
     }
 
 
-def calculate_metrics(attempts: list[dict]) -> dict:
+# PROPOSAL (branch proposed-fixes, by the backend member).
+# The hybrid difficulty classifier makes a REAL extra model call on roughly
+# 60% of requests. In a live run on 2026-10-09 that was 2,830 real tokens,
+# 27.4% of all tokens spent, and none of it appeared in attempts[], so it was
+# billed 0.00 Wh and "savings" were overstated. The classifier runs on the
+# CLASSIFIER_TIER (small by default), so one small-tier estimate is used.
+CLASSIFIER_ESTIMATE_TIER = "small"
+
+
+def classifier_overhead(classifier) -> dict | None:
+    """Estimated cost of the classifier's own model call, or None if it never ran.
+
+    ESTIMATE, like every figure here: one CLASSIFIER_ESTIMATE_TIER call, using
+    the same contract constants as attempts. "used" is true whenever a provider
+    call was ATTEMPTED, so a failed classifier call is charged too -- the same
+    rule attempts already follow.
+    """
+    if classifier is None:
+        return None
+    if not _field(classifier, "used"):
+        return None
+    estimate = TIER_ESTIMATES[CLASSIFIER_ESTIMATE_TIER]
+    return {"estimated": True, **_derive(estimate["energy_wh"], estimate["cost_inr"])}
+
+
+def calculate_metrics(attempts: list[dict], *, classifier=None) -> dict:
     """Return impact, baseline, savings; include every attempt and negatives.
 
     Raises ValueError for an empty attempt list or an unknown tier. A completed
     request always has at least one attempt, so empty input signals a caller bug.
+
+    PROPOSAL: the optional keyword-only `classifier` is additive. When it is
+    None (the default, and what every existing caller does) the returned dict
+    is byte-identical to before. When a classifier call was attempted, two
+    EXTRA keys appear: "classifier_overhead" and "impact_including_classifier".
+    "impact", "baseline" and "savings" keep their existing definitions exactly,
+    so the v1 contract and every existing test are unaffected.
     """
     attempts = list(attempts or [])
     if not attempts:
@@ -62,7 +94,16 @@ def calculate_metrics(attempts: list[dict]) -> dict:
     big = TIER_ESTIMATES["big"]
     baseline = _derive(big["energy_wh"], big["cost_inr"])
     savings = {key: baseline[key] - impact[key] for key in METRIC_KEYS}
-    return {"impact": impact, "baseline": baseline, "savings": savings}
+    result = {"impact": impact, "baseline": baseline, "savings": savings}
+
+    overhead = classifier_overhead(classifier)
+    if overhead is not None:
+        result["classifier_overhead"] = overhead
+        result["impact_including_classifier"] = {
+            "estimated": True,
+            **_derive(energy_wh + overhead["energy_wh"], cost_inr + overhead["cost_inr"]),
+        }
+    return result
 
 
 def verify_record(record: dict) -> list[str]:

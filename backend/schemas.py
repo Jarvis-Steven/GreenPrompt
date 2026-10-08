@@ -112,6 +112,10 @@ class ChatResponse(BaseModel):
     impact: Impact
     baseline: Metrics
     savings: Metrics
+    # PROPOSAL (metrics member): present only when the classifier made a real
+    # model call. Additive; impact/baseline/savings keep their v1 meanings.
+    classifier_overhead: Optional[Impact] = None
+    impact_including_classifier: Optional[Impact] = None
     summary: Summary
 
 
