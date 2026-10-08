@@ -15,6 +15,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from backend import config, metrics, model_clients, router, storage, validator
+from backend.config import TIERS
 from backend.app import app
 from backend.model_clients import ProviderError
 
@@ -622,7 +623,10 @@ class ModelClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unconfigured_tier_fails_before_any_network_call(self):
         unset = {"MEDIUM_BASE_URL": "", "MEDIUM_API_KEY": "", "MEDIUM_MODEL": ""}
-        with patch.dict(os.environ, unset), self.use_transport(lambda r: httpx.Response(200, json={})):
+        # Empty catalog: this test is about the environment-variable layer alone.
+        with patch.object(config, "load_catalog", lambda *a, **k: []), \
+                patch.dict(os.environ, unset), \
+                self.use_transport(lambda r: httpx.Response(200, json={})):
             with self.assertRaises(ProviderError) as ctx:
                 await model_clients.call_model("medium", "hi")
         self.assertEqual(ctx.exception.code, "CONFIG_MISSING")
@@ -650,12 +654,152 @@ class ConfigTests(unittest.TestCase):
         config._load_env_file(Path("does-not-exist.env"))
 
     def test_tier_configured_only_when_all_three_settings_exist(self):
+        # Empty catalog: this test is about the environment-variable layer alone.
+        self.enterContext(patch.object(config, "load_catalog", lambda *a, **k: []))
         with patch.dict(os.environ, {"SMALL_BASE_URL": "https://a.test", "SMALL_API_KEY": "k", "SMALL_MODEL": ""}):
             self.assertFalse(config.get_tier_config("small").configured)
         with patch.dict(os.environ, {"SMALL_BASE_URL": "https://a.test/", "SMALL_API_KEY": "k", "SMALL_MODEL": "m"}):
             cfg = config.get_tier_config("small")
             self.assertTrue(cfg.configured)
             self.assertEqual(cfg.base_url, "https://a.test")
+
+
+# ---------- TEST FIXTURES for the model catalog (not the real file) ----------
+def fixture_catalog():
+    """TEST FIXTURE. Mirrors backend/model_catalog.json's shape, not its contents."""
+    return [
+        {"id": "fixture/small-a", "provider": "fixture-co", "label": "Fixture Small A", "tier": "small",
+         "key_env": "FIXTURE_UNSET_KEY", "base_url": "https://a.fixture/v1", "enabled": True, "note": "n"},
+        {"id": "fixture/small-b", "provider": "fixture-co", "label": "Fixture Small B", "tier": "small",
+         "key_env": "FIXTURE_SET_KEY", "base_url": "https://b.fixture/v1/", "enabled": True, "note": "n"},
+        {"id": "fixture/small-c", "provider": "fixture-co", "label": "Fixture Small C", "tier": "small",
+         "key_env": "FIXTURE_SET_KEY", "base_url": "https://c.fixture/v1", "enabled": True, "note": "n"},
+        {"id": "fixture/medium-off", "provider": "fixture-co", "label": "Fixture Medium", "tier": "medium",
+         "key_env": "FIXTURE_SET_KEY", "base_url": "https://m.fixture/v1", "enabled": False, "note": "n"},
+    ]
+
+
+class ModelCatalogTests(unittest.TestCase):
+    """The catalog layer. No network, no real catalog file, no real keys."""
+
+    def setUp(self):
+        self.enterContext(patch.object(config, "load_catalog", lambda *a, **k: fixture_catalog()))
+        self.enterContext(patch.dict(os.environ, {"FIXTURE_SET_KEY": "fixture-key-value"}))
+        os.environ.pop("FIXTURE_UNSET_KEY", None)
+        # Clear the per-tier overrides so the catalog layer is reachable.
+        self.enterContext(patch.dict(os.environ, {
+            f"{t}_{s}": "" for t in ("SMALL", "MEDIUM", "BIG")
+            for s in ("BASE_URL", "API_KEY", "MODEL")}))
+
+    def test_first_enabled_entry_with_a_key_present_wins(self):
+        entry = config.catalog_entry_for_tier("small")
+        # small-a is listed first but its key_env is unset, so small-b is chosen.
+        self.assertEqual(entry["id"], "fixture/small-b")
+
+    def test_disabled_entries_are_never_chosen(self):
+        self.assertIsNone(config.catalog_entry_for_tier("medium"))
+
+    def test_catalog_supplies_the_tier_config_and_strips_trailing_slash(self):
+        cfg = config.get_tier_config("small")
+        self.assertEqual(cfg.model, "fixture/small-b")
+        self.assertEqual(cfg.base_url, "https://b.fixture/v1")
+        self.assertTrue(cfg.configured)
+
+    def test_explicit_env_vars_win_over_the_catalog(self):
+        override = {"SMALL_BASE_URL": "https://override.test/v1",
+                    "SMALL_API_KEY": "override-key", "SMALL_MODEL": "override-model"}
+        with patch.dict(os.environ, override):
+            cfg = config.get_tier_config("small")
+        self.assertEqual(cfg.model, "override-model")
+        self.assertEqual(cfg.base_url, "https://override.test/v1")
+
+    def test_a_partial_env_override_does_not_beat_the_catalog(self):
+        with patch.dict(os.environ, {"SMALL_MODEL": "half-configured"}):
+            self.assertEqual(config.get_tier_config("small").model, "fixture/small-b")
+
+    def test_tier_with_no_usable_entry_stays_unconfigured(self):
+        self.assertFalse(config.get_tier_config("big").configured)
+
+
+class CatalogLoadingTests(unittest.TestCase):
+    """load_catalog never raises and never trusts the file blindly."""
+
+    def write(self, text):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "model_catalog.json"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(config.load_catalog(Path("no-such-catalog.json")), [])
+
+    def test_malformed_json_returns_empty_instead_of_raising(self):
+        self.assertEqual(config.load_catalog(self.write("{not json")), [])
+
+    def test_entries_with_a_bad_tier_or_missing_fields_are_dropped(self):
+        path = self.write(json.dumps({"models": [
+            {"id": "a", "provider": "p", "label": "L", "tier": "enormous",
+             "key_env": "K", "base_url": "u", "enabled": True},
+            {"id": "b", "provider": "p", "label": "L", "tier": "small", "enabled": True},
+            "not-a-dict",
+            {"id": "c", "provider": "p", "label": "L", "tier": "small",
+             "key_env": "K", "base_url": "u", "enabled": True},
+        ]}))
+        kept = config.load_catalog(path)
+        self.assertEqual([e["id"] for e in kept], ["c"])
+
+    def test_real_catalog_file_parses_and_covers_every_tier(self):
+        entries = config.load_catalog()
+        self.assertTrue(entries, "backend/model_catalog.json failed to load")
+        for tier in TIERS:
+            self.assertTrue([e for e in entries if e["tier"] == tier], tier)
+        for entry in entries:
+            self.assertNotIn("api_key", entry)
+            self.assertTrue(entry["key_env"].isupper())
+
+
+class ModelsEndpointTests(unittest.TestCase):
+    def test_reports_live_and_not_connected_without_exposing_keys(self):
+        with patch.object(config, "load_catalog", lambda *a, **k: fixture_catalog()), \
+                patch.dict(os.environ, {"FIXTURE_SET_KEY": "super-secret-key"}):
+            os.environ.pop("FIXTURE_UNSET_KEY", None)
+            response = client.get("/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("super-secret-key", response.text)
+        by_id = {row["id"]: row for row in response.json()["models"]}
+        for key in ("label", "provider", "tier", "status"):
+            self.assertIn(key, by_id["fixture/small-b"])
+        self.assertEqual(by_id["fixture/small-b"]["status"], "live")
+        self.assertEqual(by_id["fixture/small-a"]["status"], "not_connected")
+        self.assertEqual(by_id["fixture/medium-off"]["status"], "not_connected")
+
+    def test_active_names_the_entry_each_tier_would_use(self):
+        # Clear the per-tier overrides so the catalog layer is the one under test.
+        cleared = {f"{t}_{s}": "" for t in ("SMALL", "MEDIUM", "BIG")
+                   for s in ("BASE_URL", "API_KEY", "MODEL")}
+        with patch.object(config, "load_catalog", lambda *a, **k: fixture_catalog()), \
+                patch.dict(os.environ, {"FIXTURE_SET_KEY": "k", **cleared}):
+            os.environ.pop("FIXTURE_UNSET_KEY", None)
+            data = client.get("/models").json()
+        self.assertEqual(data["active"]["small"], {"id": "fixture/small-b", "source": "catalog"})
+        self.assertEqual(data["active"]["medium"]["source"], "none")
+        self.assertIsNone(data["active"]["big"]["id"])
+
+    def test_active_reports_env_source_when_a_tier_is_overridden(self):
+        override = {"SMALL_BASE_URL": "https://override.test/v1",
+                    "SMALL_API_KEY": "override-key", "SMALL_MODEL": "override-model"}
+        with patch.object(config, "load_catalog", lambda *a, **k: fixture_catalog()),                 patch.dict(os.environ, {"FIXTURE_SET_KEY": "k", **override}):
+            data = client.get("/models").json()
+        # The catalog still lists small-b as live, but the tier really uses the override.
+        self.assertEqual(data["active"]["small"], {"id": "override-model", "source": "env"})
+
+    def test_real_catalog_is_served_without_any_key_shaped_string(self):
+        response = client.get("/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotRegex(response.text, r"gsk_[A-Za-z0-9]{10,}")
+        self.assertNotRegex(response.text, r"sk-[A-Za-z0-9]{20,}")
+        self.assertIn("tier_note", response.json())
 
 
 if __name__ == "__main__":

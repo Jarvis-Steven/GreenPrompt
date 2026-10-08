@@ -18,7 +18,10 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from backend import dev_stubs, metrics, model_clients, router, storage, validator
-from backend.config import ALLOWED_ORIGINS, dev_stubs_enabled, provider_status
+from backend.config import (
+    ALLOWED_ORIGINS, catalog_status, dev_stubs_enabled, get_tier_config, provider_status,
+    tier_source,
+)
 from backend.model_clients import ProviderError
 from backend.schemas import (
     Attempt, ChatRequest, ChatResponse, Classifier, ErrorBody, ErrorResponse, Impact, Metrics,
@@ -304,6 +307,34 @@ async def run_chat(req: ChatRequest, request_id: str):
 def health():
     return {"status": "ok", "service": "GreenPrompt", "stage": "scaffold",
             "providers": provider_status(), "dev_stubs": dev_stubs_enabled()}
+
+
+@app.get("/models")
+def models():
+    """The model catalog: which real models map to our small/medium/big labels.
+
+    "tier" is GreenPrompt's own size label, not an official provider ranking.
+    status is "live" when the entry is enabled and its key_env variable is set.
+    Never returns an API key.
+    """
+    rows = catalog_status()
+    return {
+        "models": rows,
+        "active": {tier: _active_for(tier, rows) for tier in TIER_ORDER},
+        "tier_note": "tier is GreenPrompt's own size label, not an official provider ranking.",
+    }
+
+
+def _active_for(tier: str, rows: list):
+    """What this tier ACTUALLY resolves to right now, and where it came from.
+
+    Reports the real resolved config rather than the catalog's preference, so a
+    per-tier environment override is never misreported as a catalog choice.
+    """
+    cfg = get_tier_config(tier)
+    if not cfg.configured:
+        return {"id": None, "source": "none"}
+    return {"id": cfg.model, "source": tier_source(tier)}
 
 
 @app.post("/chat")
