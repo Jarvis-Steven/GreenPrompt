@@ -19,6 +19,27 @@ _UNICODE_SPACES = "               　​"
 _OPERATOR_ALIASES = {"×": "*", "⋅": "*", "·": "*",
                      "−": "-", "–": "-", "—": "-"}
 
+# LaTeX pieces models wrap arithmetic in. Built with chr(92) so the backslash
+# is unambiguous no matter how this file is edited.
+_LATEX_OPERATORS = {
+    chr(92) + "times": "*",
+    chr(92) + "cdot": "*",
+    chr(92) + "div": "/",
+}
+
+# LaTeX spacing commands, which turn up inside numbers: 26\,806\,677
+_LATEX_SPACES = (
+    chr(92) + "quad", chr(92) + "qquad",
+    chr(92) + ",", chr(92) + "!", chr(92) + ";", chr(92) + ":",
+)
+
+# LaTeX math delimiters: \( \), \[ \] and $ $
+_LATEX_WRAPPERS = (
+    chr(92) + "(", chr(92) + ")",
+    chr(92) + "[", chr(92) + "]",
+    "$",
+)
+
 # A bare number, optionally signed, with thousands commas and a trailing period.
 _BARE_NUMBER = re.compile(r"^[+-]?\d[\d,]*\.?$")
 
@@ -38,9 +59,22 @@ def _normalise(text: str) -> str:
 
 
 def _strip_formatting(text: str) -> str:
-    """Remove bold/italic/code markers. Single '*' is left alone: it is multiplication."""
+    """Remove bold/code markers and LaTeX wrapping.
+
+    A single '*' is left alone on purpose: it is the multiplication operator.
+    Only presentation is removed; no digit is ever added, dropped or reordered,
+    so a wrong number stays wrong and still fails the check.
+    """
     text = text.replace("**", "").replace("__", "")
-    return text.replace("`", "").replace("$", "").strip()
+    for latex, plain in _LATEX_OPERATORS.items():
+        text = text.replace(latex, plain)
+    for spacer in _LATEX_SPACES:
+        text = text.replace(spacer, "")
+    # LaTeX thousands separators: 4{,}676{,}661
+    text = text.replace("{,}", "").replace("{", "").replace("}", "")
+    for wrapper in _LATEX_WRAPPERS:
+        text = text.replace(wrapper, "")
+    return re.sub(r"\s+", " ", text.replace("`", "")).strip()
 
 
 def _to_int(token: str):

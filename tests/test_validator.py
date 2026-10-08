@@ -95,6 +95,42 @@ class RealModelFormattingTests(unittest.TestCase):
         result = check_answer("What is 12 + 8?", "12 + 8 equals 21")
         self.assertEqual(result["status"], "failed")
 
+    def test_latex_wrapped_arithmetic_is_read(self):
+        # Observed live: the small model answers hard arithmetic in LaTeX.
+        result = check_answer("What is 48213 * 97?", r"\(48213 \times 97 = 4{,}676{,}661\)")
+        self.assertEqual(result["status"], "passed")
+
+    def test_latex_wrong_answer_still_fails(self):
+        # The whole point: stripping presentation must not excuse a wrong digit.
+        result = check_answer("What is 48213 * 97?", r"\(48213 \times 97 = 4{,}676{,}662\)")
+        self.assertEqual(result["status"], "failed")
+
+    def test_latex_thin_space_separators(self):
+        # 26\,806\,677 and 49,\!121,\!557
+        self.assertEqual(
+            check_answer("What is 86753 * 309?", r"\(86\,753 \times 309 = 26\,806\,677\)")["status"],
+            "passed")
+        self.assertEqual(
+            check_answer("What is 7919 * 6203?", r"\(7919 \times 6203 = 49,\!121,\!557\)")["status"],
+            "passed")
+
+    def test_latex_display_brackets_and_cdot(self):
+        result = check_answer("What is 9999 * 9999?", r"\[9999 \cdot 9999 = 99,980,001\]")
+        self.assertEqual(result["status"], "passed")
+
+    def test_dollar_delimited_math(self):
+        self.assertEqual(check_answer("What is 12 + 8?", "$12 + 8 = 20$")["status"], "passed")
+        self.assertEqual(check_answer("What is 12 + 8?", "$12 + 8 = 21$")["status"], "failed")
+
+    def test_latex_prose_still_stays_unchecked(self):
+        # Stripping LaTeX must not turn a sentence into a checkable claim.
+        result = check_answer("What is 12 + 8?", r"The answer is \(20\).")
+        self.assertEqual(result["status"], "unchecked")
+
+    def test_latex_equation_for_a_different_question_is_not_borrowed(self):
+        result = check_answer("What is 12 + 8?", r"\(9 + 9 = 18\)")
+        self.assertEqual(result["status"], "unchecked")
+
     def test_equation_for_a_different_question_is_not_borrowed(self):
         # The equation does not restate this question, so there is no clear number.
         result = check_answer("What is 12 + 8?", "9 + 9 = 18")
