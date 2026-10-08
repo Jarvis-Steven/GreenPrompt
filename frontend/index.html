@@ -1,19 +1,94 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GreenPrompt — Project starter</title>
-  <link rel="stylesheet" href="style.css">
-  <script src="script.js" defer></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="GreenPrompt intelligently routes AI requests to the right model." />
+  <title>GreenPrompt — Right model. Right resource.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <header class="site-header">
+    <a class="brand" href="#chat" aria-label="GreenPrompt home"><svg class="brand-leaf" aria-hidden="true" viewBox="0 0 20 28" fill="none"><path d="M10.2 1.4C4.4 7 2.1 12.6 3.4 18.1c.9 4 3.4 6.9 6.8 8.5-1.8-5.9-1.2-12.8 0-18.1.5 5.6.4 11.6-.1 17.5 4.4-2.8 6.4-7.2 5.7-12.2-.7-4.8-3.3-8.9-5.5-12.4Z" fill="currentColor"/><path d="M10 5.8v20.1" stroke="#F7F7F2" stroke-width="1.15" stroke-linecap="round"/></svg>GreenPrompt</a>
+    <nav class="main-nav" aria-label="Primary navigation">
+      <a class="nav-link active" href="#chat" data-view="chat">Chat</a>
+      <a class="nav-link" href="#analytics" data-view="analytics">Analytics</a>
+      <a class="nav-link" href="#history" data-view="history">History</a>
+      <a class="nav-link" href="#how-it-works" data-view="how">How it works</a>
+    </nav>
+    <div class="header-actions">
+      <button class="text-button" id="new-session-button" type="button">New session</button>
+      <button class="icon-button" id="settings-button" type="button" aria-label="Settings" aria-expanded="false">⚙</button>
+      <div class="settings-menu" id="settings-menu" hidden>
+        <label class="toggle-row" for="mock-toggle"><span><strong>Development mode</strong><small>Use the local mock API</small></span><input id="mock-toggle" type="checkbox" checked /></label>
+      </div>
+    </div>
+  </header>
+
   <main>
-    <p class="label">GREENPROMPT · TEAM STARTER</p>
-    <h1>The right-size AI for every question.</h1>
-    <p>This is the fresh frontend starting point. The frontend member owns the design and development of the chat workspace.</p>
-    <button id="check-health" type="button">Check backend connection</button>
-    <p id="connection-status" role="status">Chat and model connections are not implemented yet.</p>
+    <section class="summary-strip" aria-label="Session summary" id="summary-strip">
+      <div><strong id="summary-prompts">0</strong><span>Prompts</span></div>
+      <div><strong id="summary-small">—</strong><span>Small model</span></div>
+      <div><strong id="summary-escalations">0</strong><span>Escalations</span></div>
+      <div><strong id="summary-saved">₹0.000</strong><span>Estimated saved</span></div>
+    </section>
+
+    <section class="view active" id="chat-view" aria-labelledby="workspace-title">
+      <div class="workspace">
+        <article class="chat-panel">
+          <header class="panel-heading">
+            <div><h2 id="workspace-title">Your workspace</h2><p>One prompt. The right model.</p></div>
+            <div class="mode-control" role="group" aria-label="Model selection mode">
+              <button type="button" class="mode-button active" data-mode="smart">Smart</button><button type="button" class="mode-button" data-mode="pick">Pick model</button>
+            </div>
+          </header>
+          <div class="model-picker" id="model-picker" hidden role="group" aria-label="Choose a model">
+            <button type="button" class="model-choice selected" data-model="small"><i></i><span>Small</span><small>Fast &amp; efficient</small></button>
+            <button type="button" class="model-choice" data-model="medium"><i></i><span>Medium</span><small>Balanced reasoning</small></button>
+            <button type="button" class="model-choice" data-model="big"><i></i><span>Big</span><small>Complex work</small></button>
+          </div>
+          <div class="examples" aria-label="Prompt examples"><span>Try an example</span><button type="button">What is 1 + 1?</button><button type="button">Explain binary search in C.</button><button type="button">Summarize how solar panels work.</button><button type="button">Design a distributed AI system.</button></div>
+          <div class="conversation" id="conversation" aria-live="polite" aria-label="Conversation">
+            <div class="empty-chat" id="empty-chat"><span class="empty-leaf" aria-hidden="true"></span><h3>Start with a question</h3><p>GreenPrompt will choose a proportionate model and show you why.</p></div>
+          </div>
+          <form class="composer" id="chat-form">
+            <label class="sr-only" for="prompt-input">Message GreenPrompt</label>
+            <textarea id="prompt-input" rows="1" maxlength="2000" placeholder="Ask anything…" required></textarea>
+            <div class="composer-footer"><span><kbd>Enter</kbd> send <span class="dot">·</span> <kbd>Shift + Enter</kbd> new line</span><button class="send-button" id="send-button" type="submit" aria-label="Send prompt">↑</button></div>
+          </form>
+        </article>
+
+      </div>
+    </section>
+
+    <section class="view" id="analytics-view" aria-labelledby="analytics-title">
+      <div class="page-heading"><p class="eyebrow">SESSION OVERVIEW</p><h2 id="analytics-title">Analytics</h2><p>A calm snapshot of routing decisions and estimated resources.</p></div>
+      <div class="analytics-layout"><section class="analytics-main"><div class="metric-grid" id="analytics-metrics"></div><div class="chart-block"><div class="section-title"><h3>Model distribution</h3><span>All requests</span></div><div id="distribution-chart" class="bar-chart"></div></div></section><aside class="analytics-side"><h3>Estimated savings</h3><p>Compared with always using Big</p><div id="savings-chart" class="savings-list"></div></aside></div>
+    </section>
+
+    <section class="view" id="history-view" aria-labelledby="history-title"><div class="page-heading"><p class="eyebrow">SESSION LOG</p><h2 id="history-title">History</h2><p>Requests from this browser session.</p></div><div class="history-table-wrap"><table><thead><tr><th>Prompt</th><th>Time</th><th>Difficulty</th><th>Final model</th><th>Quality</th><th>Savings</th></tr></thead><tbody id="history-content"><tr class="empty-row"><td colspan="6">No requests in this session yet.</td></tr></tbody></table></div></section>
+
+    <section class="how-section" id="how-it-works" aria-labelledby="how-title"><div class="page-heading"><p class="eyebrow">THE PROCESS</p><h2 id="how-title">How it works</h2><p>A small decision system built around proportionate AI use.</p></div><ol class="process-list"><li><span>1</span><h3>Analyze prompt</h3><p>Assess task difficulty and intent.</p></li><li><span>2</span><h3>Choose model</h3><p>Route to the appropriate tier.</p></li><li><span>3</span><h3>Generate answer</h3><p>Make the selected model call.</p></li><li><span>4</span><h3>Check quality</h3><p>Evaluate whether it meets the task.</p></li><li><span>5</span><h3>Escalate if needed</h3><p>Retry with more capability when required.</p></li><li><span>6</span><h3>Estimate impact</h3><p>Show the baseline comparison.</p></li></ol></section>
   </main>
+  <button class="matrix-launcher" id="matrix-launcher" type="button" aria-controls="model-matrix" aria-expanded="false" aria-label="Open workspace sidebar"><span aria-hidden="true">▯</span></button>
+  <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+  <aside class="matrix-drawer" id="model-matrix" aria-label="Workspace sidebar" aria-hidden="true">
+    <header class="drawer-header"><div><p class="eyebrow">WORKSPACE SIDEBAR</p><h2>Request insights</h2><p>Automatic routing and resource results from the latest backend response.</p></div><button class="drawer-close" id="matrix-close" type="button" aria-label="Close workspace sidebar">×</button></header>
+    <section class="drawer-section resource-highlights" aria-labelledby="highlights-title"><div class="section-title"><h3 id="highlights-title">Resource impact</h3><span>BACKEND ESTIMATE</span></div><p>Compared with always using a Large model.</p><div class="highlight-grid"><article><span>Token savings</span><strong id="highlight-tokens">—</strong><small id="highlight-token-rate">Awaiting backend estimate</small></article><article><span>Cost saved</span><strong id="highlight-cost">₹0.000</strong><small>Estimated</small></article><article><span>Energy reduction</span><strong id="highlight-energy">0.00 Wh</strong><small>Estimated</small></article><article><span>Water cooling saved</span><strong id="highlight-water">0.00 mL</strong><small>Estimated</small></article></div></section>
+    <section class="drawer-section request-drawer"><div class="section-title"><h3>Routing &amp; quality</h3><span id="request-status">Waiting</span></div><div id="routing-content" class="placeholder-content"><p>Your latest request will appear here.</p></div></section>
+    <section class="drawer-section request-drawer"><div class="section-title"><h3>Estimated impact</h3><span class="estimate-label">ESTIMATE</span></div><div id="impact-content" class="placeholder-content"><p>We’ll compare the request with always using the largest model.</p></div></section>
+    <section class="drawer-section request-drawer"><button class="details-toggle" type="button" id="details-toggle" aria-expanded="false"><span>Request details</span><span aria-hidden="true">+</span></button><div id="request-details" hidden></div></section>
+    <section class="drawer-section"><div class="section-title"><h3>Account connections</h3><span>UI PREVIEW</span></div><p>Provider connection requires secure backend OAuth or API-key configuration. This page never collects account credentials.</p><div class="provider-connections"><article><div><strong>Google Gemini</strong><small>Model access and usage sync</small></div><button type="button" class="connection-button" data-provider="Google Gemini">Connect</button></article><article><div><strong>ChatGPT / OpenAI</strong><small>Model access and usage sync</small></div><button type="button" class="connection-button" data-provider="ChatGPT / OpenAI">Connect</button></article><article><div><strong>Claude / Anthropic</strong><small>Model access and usage sync</small></div><button type="button" class="connection-button" data-provider="Claude / Anthropic">Connect</button></article></div></section>
+    <section class="drawer-section catalogue-section"><div class="section-title"><h3>Provider catalogue</h3><span>15 MODELS</span></div><div class="catalogue-scroll"><table class="model-catalogue"><thead><tr><th>Tier</th><th>Provider &amp; model</th><th>Typical use</th><th>Access</th></tr></thead><tbody>
+      <tr><td><span class="tier small">Small</span></td><td><strong>Google</strong><small>Gemini 3.5 Flash-Lite</small></td><td>Simple, high-volume tasks</td><td>Free + paid</td></tr><tr><td><span class="tier small">Small</span></td><td><strong>Google</strong><small>Gemini 3.1 Flash-Lite</small></td><td>Lightweight tasks</td><td>Free + paid</td></tr><tr><td><span class="tier small">Small</span></td><td><strong>OpenAI</strong><small>GPT-6 Luna</small></td><td>Simple, efficient tasks</td><td>Paid</td></tr><tr><td><span class="tier small">Small</span></td><td><strong>Anthropic</strong><small>Claude Haiku 5.5</small></td><td>Classification, summaries</td><td>Paid / consumer access</td></tr><tr><td><span class="tier small">Small</span></td><td><strong>Anthropic</strong><small>Claude Haiku 4.5</small></td><td>Fast, lightweight tasks</td><td>Paid</td></tr>
+      <tr><td><span class="tier medium">Medium</span></td><td><strong>Google</strong><small>Gemini 3.5 Flash</small></td><td>General reasoning, coding</td><td>Free + paid</td></tr><tr><td><span class="tier medium">Medium</span></td><td><strong>Google</strong><small>Gemini 3.6 Flash</small></td><td>General tasks</td><td>Varies</td></tr><tr><td><span class="tier medium">Medium</span></td><td><strong>OpenAI</strong><small>GPT-6.1 Sol</small></td><td>Coding, reasoning</td><td>Paid</td></tr><tr><td><span class="tier medium">Medium</span></td><td><strong>Anthropic</strong><small>Claude Sonnet 5</small></td><td>Coding, reasoning</td><td>Paid</td></tr><tr><td><span class="tier medium">Medium</span></td><td><strong>Anthropic</strong><small>Claude Sonnet 4.6</small></td><td>Strong general reasoning</td><td>Paid</td></tr>
+      <tr><td><span class="tier big">Large</span></td><td><strong>Google</strong><small>Gemini 3.1 Pro</small></td><td>Complex reasoning</td><td>Paid / preview</td></tr><tr><td><span class="tier big">Large</span></td><td><strong>OpenAI</strong><small>GPT-6 Astra</small></td><td>Highest-level reasoning, coding</td><td>Paid</td></tr><tr><td><span class="tier big">Large</span></td><td><strong>Anthropic</strong><small>Claude Opus 5.5</small></td><td>Advanced reasoning</td><td>Paid</td></tr><tr><td><span class="tier big">Large</span></td><td><strong>Anthropic</strong><small>Claude Opus 5</small></td><td>Advanced reasoning</td><td>Paid</td></tr><tr><td><span class="tier big">Large</span></td><td><strong>Anthropic</strong><small>Claude Opus 4.8</small></td><td>Advanced reasoning</td><td>Paid</td></tr>
+    </tbody></table></div></section>
+  </aside>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="script.js"></script>
 </body>
 </html>
