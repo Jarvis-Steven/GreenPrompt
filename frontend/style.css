@@ -1,0 +1,9 @@
+/* Owner: frontend member. Replace this starter styling with the team design. */
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f7f1; color: #244333; font: 16px/1.6 system-ui, sans-serif; }
+main { max-width: 760px; margin: 12vh auto; padding: 32px; }
+.label { font-size: 12px; letter-spacing: 2px; }
+h1 { line-height: 1.2; font-size: clamp(30px, 6vw, 48px); }
+button { background: #246b4b; color: white; border: 0; border-radius: 8px; padding: 12px 18px; font: inherit; cursor: pointer; }
+button:disabled { opacity: .6; cursor: wait; }
+button:focus-visible { outline: 3px solid #80a84d; outline-offset: 4px; }
