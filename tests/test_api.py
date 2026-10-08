@@ -496,6 +496,89 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(model_data["classifier"]["method"], "model")
 
 
+def fake_metrics_with_classifier(attempts, *, classifier=None):
+    """TEST FIXTURE: a metrics implementation that accepts the proposed keyword."""
+    base = fake_metrics(attempts)
+    if classifier and classifier.get("used"):
+        base["classifier_overhead"] = {
+            "estimated": True, "energy_wh": 0.03, "co2_g": 0.02181,
+            "water_ml": 0.03, "cost_inr": 0.002}
+        base["impact_including_classifier"] = {
+            "estimated": True, "energy_wh": 9.9, "co2_g": 9.9,
+            "water_ml": 9.9, "cost_inr": 9.9}
+    return base
+
+
+class ClassifierOverheadResponseTests(unittest.TestCase):
+    """PROPOSAL: the overhead fields appear only when the classifier really ran."""
+
+    def test_fields_present_when_the_classifier_made_a_call(self):
+        with Harness(FakeProvider({"small": ok()}), rules=fake_rules_undecided,
+                     metrics_fn=fake_metrics_with_classifier):
+            data = post().json()
+        self.assertTrue(data["classifier"]["used"])
+        self.assertEqual(data["classifier_overhead"]["energy_wh"], 0.03)
+        self.assertEqual(data["impact_including_classifier"]["energy_wh"], 9.9)
+
+    def test_fields_absent_when_the_rules_decided(self):
+        with Harness(FakeProvider({"small": ok()}), rules=fake_rules,
+                     metrics_fn=fake_metrics_with_classifier):
+            data = post().json()
+        self.assertFalse(data["classifier"]["used"])
+        self.assertIsNone(data["classifier_overhead"])
+        self.assertIsNone(data["impact_including_classifier"])
+
+    def test_existing_metric_fields_are_untouched_by_the_addition(self):
+        with Harness(FakeProvider({"small": ok()}), rules=fake_rules_undecided,
+                     metrics_fn=fake_metrics_with_classifier):
+            data = post().json()
+        plain = fake_metrics([{"tier": "small"}])
+        self.assertEqual(data["impact"]["energy_wh"], plain["impact"]["energy_wh"])
+        self.assertEqual(data["baseline"], plain["baseline"])
+
+    def test_a_metrics_implementation_without_the_keyword_still_works(self):
+        # fake_metrics takes only (attempts); the backend must not pass the kwarg.
+        with Harness(FakeProvider({"small": ok()}), rules=fake_rules_undecided,
+                     metrics_fn=fake_metrics):
+            response = post()
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["classifier_overhead"])
+
+
+class PickModeDifficultyTests(unittest.TestCase):
+    """PROPOSAL (Fix C): pick mode reports a real baseline difficulty, not a default."""
+
+    def baseline(self, value):
+        return patch.object(router, "classify_prompt", lambda prompt: value, create=True)
+
+    def test_pick_uses_the_local_baseline_and_makes_no_classifier_call(self):
+        classifier = FakeClassifier()
+        with self.baseline("hard"):
+            with Harness(FakeProvider({"big": ok()}), rules=fake_rules_undecided,
+                         classifier=classifier):
+                data = post(mode="pick", selected_model="big").json()
+        self.assertEqual(classifier.calls, [], "pick must never call the model classifier")
+        self.assertEqual(data["difficulty"], "hard")
+        self.assertEqual(data["classifier"]["method"], "rules")
+        self.assertEqual(data["classifier"]["status"], "skipped")
+        self.assertFalse(data["classifier"]["used"])
+
+    def test_pick_never_overrides_the_chosen_tier(self):
+        provider = FakeProvider({"small": ok()})
+        with self.baseline("hard"):
+            with Harness(provider, rules=fake_rules_undecided):
+                data = post(mode="pick", selected_model="small").json()
+        self.assertEqual(provider.calls, ["small"])
+        self.assertEqual((data["initial_model"], data["final_model"]), ("small", "small"))
+
+    def test_an_unusable_baseline_falls_back_without_crashing(self):
+        with self.baseline("enormous"):
+            with Harness(FakeProvider({"big": ok()}), rules=fake_rules_undecided):
+                data = post(mode="pick", selected_model="big").json()
+        self.assertEqual(data["difficulty"], "medium")
+        self.assertEqual(data["classifier"]["method"], "fallback")
+
+
 class ClassifierConfigTests(unittest.TestCase):
     def test_defaults_and_overrides(self):
         for key in ("CLASSIFIER_TIER", "CLASSIFIER_TIMEOUT_SECONDS"):

@@ -7,6 +7,7 @@ Per request: classify -> choose a starting tier -> call the model -> check the
 answer -> ask router.next_model what to do -> repeat (never the same tier twice,
 never below the last tier). Every call becomes an attempt record.
 """
+import inspect
 import logging
 import time
 from uuid import uuid4
@@ -65,17 +66,17 @@ def _error(request_id: str, status: int, code: str, message: str, retryable: boo
     return JSONResponse(status_code=status, content=body.model_dump(mode="json"))
 
 
-def _component(name, real, stub, used, *args):
+def _component(name, real, stub, used, *args, **kwargs):
     """Call a team function. If it is unfinished, fail honestly, or (only when
     GREENPROMPT_DEV_STUBS=1) use the labelled development stub and record that."""
     try:
-        return real(*args)
+        return real(*args, **kwargs)
     except NotImplementedError:
         if not dev_stubs_enabled():
             raise ComponentNotReady(name)
         if name not in used:
             used.append(name)
-        return stub(*args)
+        return stub(*args, **kwargs)
 
 
 def _team_fn(module, name: str):
@@ -91,6 +92,20 @@ def _team_fn(module, name: str):
     def _not_ready(*args, **kwargs):
         raise NotImplementedError(name)
     return _not_ready
+
+
+def _accepts_classifier(fn) -> bool:
+    """Whether a metrics implementation takes the optional `classifier` keyword.
+
+    The field is a PROPOSAL, so the backend must keep working against a
+    metrics.calculate_metrics that has not adopted it yet.
+    """
+    try:
+        parameters = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "classifier" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
 def _classifier_instructions(used: list) -> str:
@@ -146,12 +161,21 @@ async def _classify(req: ChatRequest, used: list) -> tuple:
                                               difficulty=difficulty, reason=reason)
 
     if req.mode == "pick":
-        # Pick mode never calls the model classifier. The tier is the user's
-        # choice either way; difficulty is reported for display only.
+        # Pick mode never calls the model classifier: the tier is the user's
+        # choice either way, so a model call would be spent on a label only.
+        # Use the local baseline classifier instead of reporting a fake default.
+        baseline = _component("router.classify_prompt", _team_fn(router, "classify_prompt"),
+                              dev_stubs.classify_prompt, used, req.prompt)
+        if baseline in DIFFICULTIES:
+            return baseline, _classifier_record(
+                used_call=False, status="skipped", method="rules", difficulty=baseline,
+                reason="Pick mode: difficulty from the local baseline classifier. "
+                       "No model classifier call was made; the tier is your choice.")
+        log.warning("router.classify_prompt returned %r in pick mode; using the default", baseline)
         return FALLBACK_DIFFICULTY, _classifier_record(
             used_call=False, status="skipped", method="fallback", difficulty=FALLBACK_DIFFICULTY,
-            reason="No rule matched. Pick mode never calls the model classifier, so the "
-                   "default difficulty %r was reported." % FALLBACK_DIFFICULTY)
+            reason="Pick mode: the local baseline classifier returned an unusable value, so "
+                   "the default difficulty %r was reported." % FALLBACK_DIFFICULTY)
 
     instructions = _classifier_instructions(used)
     try:
@@ -270,11 +294,19 @@ async def run_chat(req: ChatRequest, request_id: str):
     escalated = any(a["tier"] != initial for a in attempts)
 
     try:
+        # Pass the classifier record only to implementations that accept it, so
+        # this works whether or not the metrics proposal has been merged.
+        extra = {"classifier": dict(classifier)} if _accepts_classifier(metrics.calculate_metrics) else {}
         computed = _component("metrics.calculate_metrics", metrics.calculate_metrics, dev_stubs.calculate_metrics,
-                              used, [dict(a) for a in attempts])
+                              used, [dict(a) for a in attempts], **extra)
         impact = Impact(**computed["impact"])
         baseline = Metrics(**computed["baseline"])
         savings = Metrics(**computed["savings"])
+        # Present only when the classifier actually made a provider call.
+        overhead = computed.get("classifier_overhead")
+        with_classifier = computed.get("impact_including_classifier")
+        overhead = Impact(**overhead) if overhead else None
+        with_classifier = Impact(**with_classifier) if with_classifier else None
         record = {
             "request_id": request_id, "session_id": req.session_id, "prompt": req.prompt, "mode": req.mode,
             "difficulty": difficulty, "initial_model": initial, "final_model": final_tier,
@@ -290,6 +322,7 @@ async def run_chat(req: ChatRequest, request_id: str):
             classifier=Classifier(**classifier),
             initial_model=initial, final_model=final_tier, quality=Quality(**quality), escalated=escalated,
             attempts=[Attempt(**a) for a in attempts], impact=impact, baseline=baseline, savings=savings,
+            classifier_overhead=overhead, impact_including_classifier=with_classifier,
             summary=summary,
         )
     except (ValidationError, KeyError, TypeError) as exc:
