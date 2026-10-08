@@ -9,7 +9,9 @@ import time
 
 import httpx
 
-from backend.config import get_tier_config, provider_timeout_seconds
+from backend.config import (
+    classifier_tier, classifier_timeout_seconds, get_tier_config, provider_timeout_seconds,
+)
 
 
 class ProviderError(Exception):
@@ -35,10 +37,17 @@ def _token_count(usage: dict, key: str):
     return value if isinstance(value, int) else None
 
 
-async def call_model(tier: str, prompt: str) -> dict:
+async def call_model(tier: str, prompt: str, *, instructions: str | None = None,
+                     timeout: float | None = None, max_tokens: int | None = None) -> dict:
     """Return answer, model_name, latency_ms, input_tokens, output_tokens.
 
     Token counts are None when the provider does not report them.
+
+    The optional keyword arguments exist for the difficulty classifier and do
+    nothing unless passed, so the original two-argument call is unchanged:
+      instructions  system message sent before the prompt
+      timeout       total deadline for this one request (no automatic retry)
+      max_tokens    cap on the reply length
     """
     cfg = get_tier_config(tier)
     if not cfg.configured:
@@ -54,12 +63,21 @@ async def call_model(tier: str, prompt: str) -> dict:
     def elapsed_ms() -> int:
         return int((time.perf_counter() - started) * 1000)
 
+    messages = [{"role": "user", "content": prompt}]
+    if instructions:
+        messages.insert(0, {"role": "system", "content": instructions})
+    payload = {"model": cfg.model, "messages": messages}
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    extra = {} if timeout is None else {"timeout": timeout}
+
     try:
         async with _make_client() as client:
             response = await client.post(
                 f"{cfg.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {cfg.api_key}"},
-                json={"model": cfg.model, "messages": [{"role": "user", "content": prompt}]},
+                json=payload,
+                **extra,
             )
     except httpx.TimeoutException:
         raise ProviderError("TIMEOUT", f"The {tier} model timed out.", retryable=True,
@@ -99,3 +117,19 @@ async def call_model(tier: str, prompt: str) -> dict:
         "input_tokens": _token_count(usage, "prompt_tokens"),
         "output_tokens": _token_count(usage, "completion_tokens"),
     }
+
+
+async def classify(prompt: str, *, instructions: str, tier: str | None = None,
+                   timeout: float | None = None) -> dict:
+    """One classifier call on CLASSIFIER_TIER. Same return shape as call_model.
+
+    "answer" is the model's raw text; Jarvis's parser turns it into a difficulty.
+    A single attempt only: on failure this raises ProviderError and the caller
+    falls back. It never retries and never invents a difficulty.
+    """
+    return await call_model(
+        tier or classifier_tier(),
+        prompt,
+        instructions=instructions,
+        timeout=classifier_timeout_seconds() if timeout is None else timeout,
+    )

@@ -9,6 +9,13 @@ Delete a stub's use (and then this file) as each real component lands.
 """
 
 TIERS = ["small", "medium", "big"]
+DIFFICULTIES = ["easy", "medium", "hard"]
+
+CLASSIFIER_INSTRUCTIONS = (
+    "PLACEHOLDER INSTRUCTIONS - replace with router.CLASSIFIER_INSTRUCTIONS. "
+    "Rate how hard the user's question is to answer correctly. "
+    "Reply with exactly one word: easy, medium, or hard. No punctuation, no explanation."
+)
 
 
 def classify_prompt(prompt: str) -> str:
@@ -60,3 +67,28 @@ def record_result(record: dict) -> dict:
         "escalations": sum(1 for r in mine if r["escalated"]),
         "cumulative_savings": savings,
     }
+
+
+def classify_with_rules(prompt: str) -> dict:
+    """Jarvis's rules pass. difficulty None means "rules cannot decide, ask a model".
+
+    Deliberately decides only the most obvious cases, so the model path is
+    actually exercised during development.
+    """
+    text = prompt.strip()
+    lowered = text.lower()
+    if len(text) > 400:
+        return {"difficulty": "hard", "reason": "DEV STUB: very long prompt."}
+    if len(text) <= 60 and lowered.startswith(("what is", "who is", "when did", "where is")):
+        return {"difficulty": "easy", "reason": "DEV STUB: short factual lookup."}
+    return {"difficulty": None, "reason": "DEV STUB: no rule matched; a model decision is needed."}
+
+
+def classify_from_model_output(prompt: str, raw_text: str) -> dict:
+    """Jarvis's parser. Raises ValueError when the model output is unusable."""
+    lowered = (raw_text or "").strip().lower()
+    found = [(lowered.index(level), level) for level in DIFFICULTIES if level in lowered]
+    if not found:
+        raise ValueError("DEV STUB: the classifier output contained no difficulty word.")
+    level = min(found)[1]
+    return {"difficulty": level, "reason": f"DEV STUB: classifier output contained {level!r}."}

@@ -15,6 +15,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from backend import config, metrics, model_clients, router, storage, validator
+from backend.config import TIERS
 from backend.app import app
 from backend.model_clients import ProviderError
 
@@ -25,8 +26,33 @@ TIERS = ["small", "medium", "big"]
 
 
 # ---------- TEST FAKES (not real components) ----------
-def fake_classify(prompt):
-    return "easy"
+def fake_rules(prompt):
+    """Rules decide, so no classifier model call should happen."""
+    return {"difficulty": "easy", "reason": "test: rule matched"}
+
+
+def fake_rules_undecided(prompt):
+    """Rules cannot decide, so smart mode must ask the model classifier."""
+    return {"difficulty": None, "reason": "test: no rule matched"}
+
+
+def fake_parse(prompt, raw_text):
+    return {"difficulty": "easy", "reason": "test: parsed %r" % raw_text}
+
+
+class FakeClassifier:
+    """TEST FAKE for model_clients.classify. Records every call."""
+
+    def __init__(self, outcome=None):
+        self.outcome = outcome
+        self.calls = []
+
+    async def __call__(self, prompt, *, instructions, tier=None, timeout=None):
+        self.calls.append(prompt)
+        if isinstance(self.outcome, ProviderError):
+            raise self.outcome
+        return self.outcome or {"answer": "easy", "model_name": "test-classifier",
+                                "latency_ms": 3, "input_tokens": 9, "output_tokens": 1}
 
 
 def fake_choose(difficulty, mode, selected_model):
@@ -81,11 +107,18 @@ def ok():
 class Harness:
     """Patches every collaborator with TEST FAKES for one test."""
 
-    def __init__(self, provider, check=None, next_fn=fake_next, metrics_fn=fake_metrics):
+    def __init__(self, provider, check=None, next_fn=fake_next, metrics_fn=fake_metrics,
+                 rules=fake_rules, parse=fake_parse, classifier=None):
         self.provider = provider
         self.check = check or (lambda prompt, answer: {"status": "passed", "reason": "test: passed"})
+        # classify_with_rules / classify_from_model_output are not in router.py yet,
+        # so these patches create them (create=True).
+        self.classifier = classifier if classifier is not None else FakeClassifier()
         self.patches = [
-            patch.object(router, "classify_prompt", fake_classify),
+            patch.object(router, "classify_with_rules", rules, create=True),
+            patch.object(router, "classify_from_model_output", parse, create=True),
+            patch.object(router, "CLASSIFIER_INSTRUCTIONS", "TEST FAKE instructions", create=True),
+            patch.object(model_clients, "classify", self.classifier),
             patch.object(router, "choose_model", fake_choose),
             patch.object(router, "next_model", next_fn),
             patch.object(validator, "check_answer", self.check),
@@ -295,7 +328,8 @@ class PendingComponentTests(unittest.TestCase):
 
     def pending_patches(self):
         return [
-            patch.object(router, "classify_prompt", self.pending),
+            patch.object(router, "classify_with_rules", self.pending, create=True),
+            patch.object(router, "classify_from_model_output", self.pending, create=True),
             patch.object(router, "choose_model", self.pending),
             patch.object(router, "next_model", self.pending),
             patch.object(validator, "check_answer", self.pending),
@@ -326,12 +360,159 @@ class PendingComponentTests(unittest.TestCase):
         response = self.run_with_pending(provider, {"GREENPROMPT_DEV_STUBS": "1"})
         self.assertEqual(response.status_code, 200)
         header = response.headers["X-GreenPrompt-Dev-Stubs"]
-        for name in ("router.classify_prompt", "validator.check_answer", "metrics.calculate_metrics",
+        for name in ("router.classify_with_rules", "validator.check_answer", "metrics.calculate_metrics",
                      "storage.record_result"):
             self.assertIn(name, header)
         data = response.json()
         self.assertEqual(data["quality"]["status"], "unchecked")
         self.assertIn("DEV STUB", data["quality"]["reason"])
+
+
+class ClassifierTests(unittest.TestCase):
+    """Hybrid difficulty classification: rules first, one model call only if needed."""
+
+    def test_rules_decide_so_no_classifier_call_is_made(self):
+        classifier = FakeClassifier()
+        with Harness(FakeProvider({"small": ok()}), classifier=classifier):
+            data = post().json()
+        self.assertEqual(classifier.calls, [])
+        self.assertEqual(data["difficulty"], "easy")
+        self.assertEqual(data["classifier"]["used"], False)
+        self.assertEqual(data["classifier"]["status"], "skipped")
+        self.assertEqual(data["classifier"]["method"], "rules")
+        self.assertIsNone(data["classifier"]["model_name"])
+        self.assertEqual(data["classifier"]["difficulty"], "easy")
+
+    def test_rules_undecided_calls_the_model_classifier_and_parses_it(self):
+        classifier = FakeClassifier()
+        with Harness(FakeProvider({"small": ok()}), rules=fake_rules_undecided, classifier=classifier):
+            data = post().json()
+        self.assertEqual(classifier.calls, ["What is 1 + 1?"])
+        record = data["classifier"]
+        self.assertEqual((record["used"], record["status"], record["method"]), (True, "success", "model"))
+        self.assertEqual(record["model_name"], "test-classifier")
+        self.assertEqual((record["latency_ms"], record["input_tokens"], record["output_tokens"]), (3, 9, 1))
+        self.assertEqual(data["difficulty"], "easy")
+
+    def test_classifier_timeout_falls_back_to_medium_and_keeps_usage_details(self):
+        timeout = ProviderError("TIMEOUT", "classifier timed out", retryable=True,
+                                model_name="test-classifier", latency_ms=5000)
+        with Harness(FakeProvider({"medium": ok()}), rules=fake_rules_undecided,
+                     classifier=FakeClassifier(timeout)):
+            data = post().json()
+        record = data["classifier"]
+        self.assertEqual((record["used"], record["status"], record["method"]), (True, "timeout", "fallback"))
+        self.assertEqual(data["difficulty"], "medium")
+        # The failed call's usage must survive, not be erased.
+        self.assertEqual(record["model_name"], "test-classifier")
+        self.assertEqual(record["latency_ms"], 5000)
+        self.assertIn("TIMEOUT", record["reason"])
+
+    def test_provider_error_other_than_timeout_is_status_error(self):
+        broken = ProviderError("RATE_LIMITED", "classifier rate limited", retryable=True,
+                               model_name="test-classifier", latency_ms=11)
+        with Harness(FakeProvider({"medium": ok()}), rules=fake_rules_undecided,
+                     classifier=FakeClassifier(broken)):
+            record = post().json()["classifier"]
+        self.assertEqual((record["status"], record["method"]), ("error", "fallback"))
+        self.assertEqual(record["latency_ms"], 11)
+
+    def test_unparsable_output_is_invalid_output_and_keeps_usage(self):
+        def bad_parse(prompt, raw_text):
+            raise ValueError("no difficulty word found")
+        with Harness(FakeProvider({"medium": ok()}), rules=fake_rules_undecided, parse=bad_parse):
+            data = post().json()
+        record = data["classifier"]
+        self.assertEqual((record["used"], record["status"], record["method"]),
+                         (True, "invalid_output", "fallback"))
+        self.assertEqual(data["difficulty"], "medium")
+        self.assertEqual(record["model_name"], "test-classifier")
+        self.assertEqual((record["latency_ms"], record["input_tokens"], record["output_tokens"]), (3, 9, 1))
+
+    def test_a_parser_returning_nonsense_is_also_invalid_output(self):
+        with Harness(FakeProvider({"medium": ok()}), rules=fake_rules_undecided,
+                     parse=lambda prompt, raw: {"difficulty": "extremely-hard", "reason": "x"}):
+            record = post().json()["classifier"]
+        self.assertEqual(record["status"], "invalid_output")
+
+    def test_pick_mode_never_calls_the_classifier_and_keeps_the_chosen_tier(self):
+        classifier = FakeClassifier()
+        provider = FakeProvider({"big": ok()})
+        with Harness(provider, rules=fake_rules_undecided, classifier=classifier):
+            data = post(mode="pick", selected_model="big").json()
+        self.assertEqual(classifier.calls, [])
+        self.assertEqual(provider.calls, ["big"])
+        self.assertEqual((data["initial_model"], data["final_model"]), ("big", "big"))
+        self.assertEqual(data["classifier"]["used"], False)
+        self.assertEqual(data["classifier"]["status"], "skipped")
+
+    def test_pick_mode_with_a_rules_difficulty_reports_method_rules(self):
+        classifier = FakeClassifier()
+        with Harness(FakeProvider({"big": ok()}), classifier=classifier):
+            record = post(mode="pick", selected_model="big").json()["classifier"]
+        self.assertEqual(classifier.calls, [])
+        self.assertEqual((record["method"], record["status"]), ("rules", "skipped"))
+
+    def test_classifier_record_never_appears_inside_attempts(self):
+        with Harness(FakeProvider({"small": ok()}), rules=fake_rules_undecided):
+            data = post().json()
+        self.assertIn("classifier", data)
+        self.assertEqual(len(data["attempts"]), 1)
+        for attempt in data["attempts"]:
+            for forbidden in ("used", "method", "difficulty", "reason"):
+                self.assertNotIn(forbidden, attempt)
+            self.assertNotEqual(attempt["model_name"], "test-classifier")
+
+    def test_classifier_is_not_passed_to_metrics_as_an_attempt(self):
+        seen = []
+
+        def spy(attempts):
+            seen.append(attempts)
+            return fake_metrics(attempts)
+        with Harness(FakeProvider({"small": ok()}), rules=fake_rules_undecided, metrics_fn=spy):
+            post()
+        self.assertEqual(len(seen[0]), 1)
+        self.assertEqual(seen[0][0]["model_name"], "test-small")
+
+    def test_escalation_and_answering_counts_are_unchanged_by_classification(self):
+        """Same provider outcomes, two different classification paths, same answer side."""
+        def run(rules):
+            provider = FakeProvider({"small": failure("TIMEOUT"), "medium": ok()})
+            with Harness(provider, rules=rules):
+                data = post().json()
+            return provider.calls, data
+
+        rules_calls, rules_data = run(fake_rules)
+        model_calls, model_data = run(fake_rules_undecided)
+
+        self.assertEqual(rules_calls, model_calls)
+        for key in ("initial_model", "final_model", "escalated"):
+            self.assertEqual(rules_data[key], model_data[key], key)
+        self.assertEqual([a["status"] for a in rules_data["attempts"]],
+                         [a["status"] for a in model_data["attempts"]])
+        self.assertEqual(rules_data["summary"]["escalations"], model_data["summary"]["escalations"])
+        self.assertTrue(rules_data["escalated"])
+        # Only the classification bookkeeping differs.
+        self.assertEqual(rules_data["classifier"]["method"], "rules")
+        self.assertEqual(model_data["classifier"]["method"], "model")
+
+
+class ClassifierConfigTests(unittest.TestCase):
+    def test_defaults_and_overrides(self):
+        for key in ("CLASSIFIER_TIER", "CLASSIFIER_TIMEOUT_SECONDS"):
+            os.environ.pop(key, None)
+        self.assertEqual(config.classifier_tier(), "small")
+        self.assertEqual(config.classifier_timeout_seconds(), 5.0)
+        with patch.dict(os.environ, {"CLASSIFIER_TIER": "BIG", "CLASSIFIER_TIMEOUT_SECONDS": "2.5"}):
+            self.assertEqual(config.classifier_tier(), "big")
+            self.assertEqual(config.classifier_timeout_seconds(), 2.5)
+
+    def test_nonsense_values_fall_back_to_defaults(self):
+        with patch.dict(os.environ, {"CLASSIFIER_TIER": "enormous", "CLASSIFIER_TIMEOUT_SECONDS": "soon"}):
+            self.assertEqual(config.classifier_tier(), "small")
+            self.assertEqual(config.classifier_timeout_seconds(), 5.0)
+        with patch.dict(os.environ, {"CLASSIFIER_TIMEOUT_SECONDS": "0"}):
+            self.assertEqual(config.classifier_timeout_seconds(), 5.0)
 
 
 class ModelClientTests(unittest.IsolatedAsyncioTestCase):
@@ -411,9 +592,41 @@ class ModelClientTests(unittest.IsolatedAsyncioTestCase):
         await self.assert_error(lambda r: httpx.Response(200, json={"unexpected": True}), "BAD_RESPONSE", True)
         await self.assert_error(lambda r: httpx.Response(200, text="<html>"), "BAD_RESPONSE", True)
 
+    async def test_optional_parameters_change_the_request_only_when_passed(self):
+        body = {"choices": [{"message": {"content": "easy"}}], "usage": {"prompt_tokens": 7, "completion_tokens": 1}}
+        with self.use_transport(lambda r: httpx.Response(200, json=body)):
+            await model_clients.call_model("small", "hi", instructions="be brief", max_tokens=5)
+        sent = json.loads(self.requests[0].read())
+        self.assertEqual(sent["messages"], [{"role": "system", "content": "be brief"},
+                                            {"role": "user", "content": "hi"}])
+        self.assertEqual(sent["max_tokens"], 5)
+
+    async def test_classify_uses_the_classifier_tier_and_returns_raw_text(self):
+        body = {"choices": [{"message": {"content": " Hard "}}], "usage": {"prompt_tokens": 7, "completion_tokens": 1}}
+        env = {"CLASSIFIER_TIER": "small", "CLASSIFIER_TIMEOUT_SECONDS": "3"}
+        with patch.dict(os.environ, env), self.use_transport(lambda r: httpx.Response(200, json=body)):
+            result = await model_clients.classify("hi", instructions="classify this")
+        self.assertEqual(result["answer"], " Hard ")
+        self.assertEqual(result["model_name"], "model-s")
+        self.assertEqual((result["input_tokens"], result["output_tokens"]), (7, 1))
+        sent = json.loads(self.requests[0].read())
+        self.assertEqual(sent["messages"][0], {"role": "system", "content": "classify this"})
+
+    async def test_classifier_timeout_raises_and_never_retries(self):
+        def handler(request):
+            raise httpx.ReadTimeout("slow", request=request)
+        with patch.dict(os.environ, {"CLASSIFIER_TIMEOUT_SECONDS": "1"}), self.use_transport(handler):
+            with self.assertRaises(ProviderError) as ctx:
+                await model_clients.classify("hi", instructions="x")
+        self.assertEqual(ctx.exception.code, "TIMEOUT")
+        self.assertEqual(len(self.requests), 1)
+
     async def test_unconfigured_tier_fails_before_any_network_call(self):
         unset = {"MEDIUM_BASE_URL": "", "MEDIUM_API_KEY": "", "MEDIUM_MODEL": ""}
-        with patch.dict(os.environ, unset), self.use_transport(lambda r: httpx.Response(200, json={})):
+        # Empty catalog: this test is about the environment-variable layer alone.
+        with patch.object(config, "load_catalog", lambda *a, **k: []), \
+                patch.dict(os.environ, unset), \
+                self.use_transport(lambda r: httpx.Response(200, json={})):
             with self.assertRaises(ProviderError) as ctx:
                 await model_clients.call_model("medium", "hi")
         self.assertEqual(ctx.exception.code, "CONFIG_MISSING")
@@ -441,12 +654,152 @@ class ConfigTests(unittest.TestCase):
         config._load_env_file(Path("does-not-exist.env"))
 
     def test_tier_configured_only_when_all_three_settings_exist(self):
+        # Empty catalog: this test is about the environment-variable layer alone.
+        self.enterContext(patch.object(config, "load_catalog", lambda *a, **k: []))
         with patch.dict(os.environ, {"SMALL_BASE_URL": "https://a.test", "SMALL_API_KEY": "k", "SMALL_MODEL": ""}):
             self.assertFalse(config.get_tier_config("small").configured)
         with patch.dict(os.environ, {"SMALL_BASE_URL": "https://a.test/", "SMALL_API_KEY": "k", "SMALL_MODEL": "m"}):
             cfg = config.get_tier_config("small")
             self.assertTrue(cfg.configured)
             self.assertEqual(cfg.base_url, "https://a.test")
+
+
+# ---------- TEST FIXTURES for the model catalog (not the real file) ----------
+def fixture_catalog():
+    """TEST FIXTURE. Mirrors backend/model_catalog.json's shape, not its contents."""
+    return [
+        {"id": "fixture/small-a", "provider": "fixture-co", "label": "Fixture Small A", "tier": "small",
+         "key_env": "FIXTURE_UNSET_KEY", "base_url": "https://a.fixture/v1", "enabled": True, "note": "n"},
+        {"id": "fixture/small-b", "provider": "fixture-co", "label": "Fixture Small B", "tier": "small",
+         "key_env": "FIXTURE_SET_KEY", "base_url": "https://b.fixture/v1/", "enabled": True, "note": "n"},
+        {"id": "fixture/small-c", "provider": "fixture-co", "label": "Fixture Small C", "tier": "small",
+         "key_env": "FIXTURE_SET_KEY", "base_url": "https://c.fixture/v1", "enabled": True, "note": "n"},
+        {"id": "fixture/medium-off", "provider": "fixture-co", "label": "Fixture Medium", "tier": "medium",
+         "key_env": "FIXTURE_SET_KEY", "base_url": "https://m.fixture/v1", "enabled": False, "note": "n"},
+    ]
+
+
+class ModelCatalogTests(unittest.TestCase):
+    """The catalog layer. No network, no real catalog file, no real keys."""
+
+    def setUp(self):
+        self.enterContext(patch.object(config, "load_catalog", lambda *a, **k: fixture_catalog()))
+        self.enterContext(patch.dict(os.environ, {"FIXTURE_SET_KEY": "fixture-key-value"}))
+        os.environ.pop("FIXTURE_UNSET_KEY", None)
+        # Clear the per-tier overrides so the catalog layer is reachable.
+        self.enterContext(patch.dict(os.environ, {
+            f"{t}_{s}": "" for t in ("SMALL", "MEDIUM", "BIG")
+            for s in ("BASE_URL", "API_KEY", "MODEL")}))
+
+    def test_first_enabled_entry_with_a_key_present_wins(self):
+        entry = config.catalog_entry_for_tier("small")
+        # small-a is listed first but its key_env is unset, so small-b is chosen.
+        self.assertEqual(entry["id"], "fixture/small-b")
+
+    def test_disabled_entries_are_never_chosen(self):
+        self.assertIsNone(config.catalog_entry_for_tier("medium"))
+
+    def test_catalog_supplies_the_tier_config_and_strips_trailing_slash(self):
+        cfg = config.get_tier_config("small")
+        self.assertEqual(cfg.model, "fixture/small-b")
+        self.assertEqual(cfg.base_url, "https://b.fixture/v1")
+        self.assertTrue(cfg.configured)
+
+    def test_explicit_env_vars_win_over_the_catalog(self):
+        override = {"SMALL_BASE_URL": "https://override.test/v1",
+                    "SMALL_API_KEY": "override-key", "SMALL_MODEL": "override-model"}
+        with patch.dict(os.environ, override):
+            cfg = config.get_tier_config("small")
+        self.assertEqual(cfg.model, "override-model")
+        self.assertEqual(cfg.base_url, "https://override.test/v1")
+
+    def test_a_partial_env_override_does_not_beat_the_catalog(self):
+        with patch.dict(os.environ, {"SMALL_MODEL": "half-configured"}):
+            self.assertEqual(config.get_tier_config("small").model, "fixture/small-b")
+
+    def test_tier_with_no_usable_entry_stays_unconfigured(self):
+        self.assertFalse(config.get_tier_config("big").configured)
+
+
+class CatalogLoadingTests(unittest.TestCase):
+    """load_catalog never raises and never trusts the file blindly."""
+
+    def write(self, text):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "model_catalog.json"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(config.load_catalog(Path("no-such-catalog.json")), [])
+
+    def test_malformed_json_returns_empty_instead_of_raising(self):
+        self.assertEqual(config.load_catalog(self.write("{not json")), [])
+
+    def test_entries_with_a_bad_tier_or_missing_fields_are_dropped(self):
+        path = self.write(json.dumps({"models": [
+            {"id": "a", "provider": "p", "label": "L", "tier": "enormous",
+             "key_env": "K", "base_url": "u", "enabled": True},
+            {"id": "b", "provider": "p", "label": "L", "tier": "small", "enabled": True},
+            "not-a-dict",
+            {"id": "c", "provider": "p", "label": "L", "tier": "small",
+             "key_env": "K", "base_url": "u", "enabled": True},
+        ]}))
+        kept = config.load_catalog(path)
+        self.assertEqual([e["id"] for e in kept], ["c"])
+
+    def test_real_catalog_file_parses_and_covers_every_tier(self):
+        entries = config.load_catalog()
+        self.assertTrue(entries, "backend/model_catalog.json failed to load")
+        for tier in TIERS:
+            self.assertTrue([e for e in entries if e["tier"] == tier], tier)
+        for entry in entries:
+            self.assertNotIn("api_key", entry)
+            self.assertTrue(entry["key_env"].isupper())
+
+
+class ModelsEndpointTests(unittest.TestCase):
+    def test_reports_live_and_not_connected_without_exposing_keys(self):
+        with patch.object(config, "load_catalog", lambda *a, **k: fixture_catalog()), \
+                patch.dict(os.environ, {"FIXTURE_SET_KEY": "super-secret-key"}):
+            os.environ.pop("FIXTURE_UNSET_KEY", None)
+            response = client.get("/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("super-secret-key", response.text)
+        by_id = {row["id"]: row for row in response.json()["models"]}
+        for key in ("label", "provider", "tier", "status"):
+            self.assertIn(key, by_id["fixture/small-b"])
+        self.assertEqual(by_id["fixture/small-b"]["status"], "live")
+        self.assertEqual(by_id["fixture/small-a"]["status"], "not_connected")
+        self.assertEqual(by_id["fixture/medium-off"]["status"], "not_connected")
+
+    def test_active_names_the_entry_each_tier_would_use(self):
+        # Clear the per-tier overrides so the catalog layer is the one under test.
+        cleared = {f"{t}_{s}": "" for t in ("SMALL", "MEDIUM", "BIG")
+                   for s in ("BASE_URL", "API_KEY", "MODEL")}
+        with patch.object(config, "load_catalog", lambda *a, **k: fixture_catalog()), \
+                patch.dict(os.environ, {"FIXTURE_SET_KEY": "k", **cleared}):
+            os.environ.pop("FIXTURE_UNSET_KEY", None)
+            data = client.get("/models").json()
+        self.assertEqual(data["active"]["small"], {"id": "fixture/small-b", "source": "catalog"})
+        self.assertEqual(data["active"]["medium"]["source"], "none")
+        self.assertIsNone(data["active"]["big"]["id"])
+
+    def test_active_reports_env_source_when_a_tier_is_overridden(self):
+        override = {"SMALL_BASE_URL": "https://override.test/v1",
+                    "SMALL_API_KEY": "override-key", "SMALL_MODEL": "override-model"}
+        with patch.object(config, "load_catalog", lambda *a, **k: fixture_catalog()),                 patch.dict(os.environ, {"FIXTURE_SET_KEY": "k", **override}):
+            data = client.get("/models").json()
+        # The catalog still lists small-b as live, but the tier really uses the override.
+        self.assertEqual(data["active"]["small"], {"id": "override-model", "source": "env"})
+
+    def test_real_catalog_is_served_without_any_key_shaped_string(self):
+        response = client.get("/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotRegex(response.text, r"gsk_[A-Za-z0-9]{10,}")
+        self.assertNotRegex(response.text, r"sk-[A-Za-z0-9]{20,}")
+        self.assertIn("tier_note", response.json())
 
 
 if __name__ == "__main__":
