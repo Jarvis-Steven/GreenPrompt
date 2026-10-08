@@ -13,6 +13,9 @@ Difficulty = Literal["easy", "medium", "hard"]
 Mode = Literal["smart", "pick"]
 QualityStatus = Literal["passed", "failed", "unchecked"]
 CallStatus = Literal["success", "error"]
+# How the difficulty was decided, and what became of the classifier call.
+ClassifierMethod = Literal["rules", "model", "fallback"]
+ClassifierStatus = Literal["skipped", "success", "timeout", "error", "invalid_output"]
 
 
 ErrorCode = Literal[
@@ -60,6 +63,20 @@ class Attempt(BaseModel):
     quality_reason: str
 
 
+class Classifier(BaseModel):
+    """How this request's difficulty was decided. Top level, never inside attempts."""
+
+    used: bool                       # true if a provider call was ATTEMPTED, failures included
+    status: ClassifierStatus
+    method: ClassifierMethod
+    model_name: Optional[str] = None
+    latency_ms: Optional[int] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    difficulty: Difficulty
+    reason: str
+
+
 class Metrics(BaseModel):
     energy_wh: float
     co2_g: float
@@ -85,6 +102,8 @@ class ChatResponse(BaseModel):
     session_id: str
     answer: str
     difficulty: Difficulty
+    # Optional so an older frontend keeps working; the backend always fills it in.
+    classifier: Optional[Classifier] = None
     initial_model: Tier
     final_model: Tier
     quality: Quality

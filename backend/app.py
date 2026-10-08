@@ -21,7 +21,8 @@ from backend import dev_stubs, metrics, model_clients, router, storage, validato
 from backend.config import ALLOWED_ORIGINS, dev_stubs_enabled, provider_status
 from backend.model_clients import ProviderError
 from backend.schemas import (
-    Attempt, ChatRequest, ChatResponse, ErrorBody, ErrorResponse, Impact, Metrics, Quality, Summary,
+    Attempt, ChatRequest, ChatResponse, Classifier, ErrorBody, ErrorResponse, Impact, Metrics,
+    Quality, Summary,
 )
 
 log = logging.getLogger("greenprompt")
@@ -29,6 +30,8 @@ log = logging.getLogger("greenprompt")
 TIER_ORDER = ["small", "medium", "big"]
 DIFFICULTIES = ("easy", "medium", "hard")
 QUALITY_STATUSES = ("passed", "failed", "unchecked")
+# Used when the classifier cannot produce a difficulty. Never a claim about the prompt.
+FALLBACK_DIFFICULTY = "medium"
 STUB_HEADER = "X-GreenPrompt-Dev-Stubs"
 
 app = FastAPI(title="GreenPrompt", version="0.1.0")
@@ -75,6 +78,117 @@ def _component(name, real, stub, used, *args):
         return stub(*args)
 
 
+def _team_fn(module, name: str):
+    """A teammate's function, or a stand-in that reports it is not ready.
+
+    classify_with_rules and classify_from_model_output are not in router.py yet,
+    so a missing attribute has to behave exactly like NotImplementedError.
+    """
+    fn = getattr(module, name, None)
+    if callable(fn):
+        return fn
+
+    def _not_ready(*args, **kwargs):
+        raise NotImplementedError(name)
+    return _not_ready
+
+
+def _classifier_instructions(used: list) -> str:
+    """Jarvis's wording when router.CLASSIFIER_INSTRUCTIONS exists, otherwise the
+    clearly labelled development placeholder."""
+    text = getattr(router, "CLASSIFIER_INSTRUCTIONS", None)
+    if isinstance(text, str) and text.strip():
+        return text
+    if not dev_stubs_enabled():
+        raise ComponentNotReady("router.CLASSIFIER_INSTRUCTIONS")
+    if "router.CLASSIFIER_INSTRUCTIONS" not in used:
+        used.append("router.CLASSIFIER_INSTRUCTIONS")
+    return dev_stubs.CLASSIFIER_INSTRUCTIONS
+
+
+def _classifier_record(*, used_call: bool, status: str, method: str, difficulty: str, reason: str,
+                       model_name=None, latency_ms=None, input_tokens=None, output_tokens=None) -> dict:
+    return {
+        "used": used_call, "status": status, "method": method, "model_name": model_name,
+        "latency_ms": latency_ms, "input_tokens": input_tokens, "output_tokens": output_tokens,
+        "difficulty": difficulty, "reason": reason,
+    }
+
+
+def _read_rules(result) -> tuple:
+    """(difficulty or None, reason). Anything malformed counts as "cannot decide"."""
+    if not isinstance(result, dict):
+        log.warning("router.classify_with_rules returned %r, not a dict; treating as undecided", type(result))
+        return None, "The rules pass returned an unusable result; treated as undecided."
+    difficulty = result.get("difficulty")
+    reason = result.get("reason", "") if isinstance(result.get("reason"), str) else ""
+    if difficulty is None:
+        return None, reason
+    if difficulty not in DIFFICULTIES:
+        log.warning("router.classify_with_rules returned invalid difficulty %r; treating as undecided", difficulty)
+        return None, "The rules pass returned an invalid difficulty; treated as undecided."
+    return difficulty, reason
+
+
+async def _classify(req: ChatRequest, used: list) -> tuple:
+    """Hybrid classification. Returns (difficulty, classifier record).
+
+    Rules first. Only when the rules cannot decide, and only in smart mode, does
+    one model call happen. Any failure falls back to a labelled default
+    difficulty and keeps the failed call's usage details.
+    """
+    rules = _component("router.classify_with_rules", _team_fn(router, "classify_with_rules"),
+                       dev_stubs.classify_with_rules, used, req.prompt)
+    difficulty, reason = _read_rules(rules)
+
+    if difficulty is not None:
+        return difficulty, _classifier_record(used_call=False, status="skipped", method="rules",
+                                              difficulty=difficulty, reason=reason)
+
+    if req.mode == "pick":
+        # Pick mode never calls the model classifier. The tier is the user's
+        # choice either way; difficulty is reported for display only.
+        return FALLBACK_DIFFICULTY, _classifier_record(
+            used_call=False, status="skipped", method="fallback", difficulty=FALLBACK_DIFFICULTY,
+            reason="No rule matched. Pick mode never calls the model classifier, so the "
+                   "default difficulty %r was reported." % FALLBACK_DIFFICULTY)
+
+    instructions = _classifier_instructions(used)
+    try:
+        result = await model_clients.classify(req.prompt, instructions=instructions)
+    except ProviderError as exc:
+        log.warning("classifier call failed: %s: %s", exc.code, exc.message)
+        return FALLBACK_DIFFICULTY, _classifier_record(
+            used_call=True, status="timeout" if exc.code == "TIMEOUT" else "error", method="fallback",
+            difficulty=FALLBACK_DIFFICULTY, reason="%s: %s" % (exc.code, exc.message),
+            model_name=exc.model_name or None, latency_ms=exc.latency_ms or None)
+    except Exception:
+        log.exception("unexpected error in the classifier client")
+        return FALLBACK_DIFFICULTY, _classifier_record(
+            used_call=True, status="error", method="fallback", difficulty=FALLBACK_DIFFICULTY,
+            reason="INTERNAL: unexpected error in the classifier client.")
+
+    # The call succeeded, so its usage is real and is kept whatever the parser says.
+    usage = {"model_name": result.get("model_name"), "latency_ms": result.get("latency_ms"),
+             "input_tokens": result.get("input_tokens"), "output_tokens": result.get("output_tokens")}
+    try:
+        parsed = _component("router.classify_from_model_output",
+                            _team_fn(router, "classify_from_model_output"),
+                            dev_stubs.classify_from_model_output, used, req.prompt, result["answer"])
+        if not isinstance(parsed, dict) or parsed.get("difficulty") not in DIFFICULTIES:
+            raise ValueError("parser returned %r" % (parsed,))
+    except (ValueError, KeyError, TypeError) as exc:
+        log.warning("classifier output could not be parsed: %s", exc)
+        return FALLBACK_DIFFICULTY, _classifier_record(
+            used_call=True, status="invalid_output", method="fallback", difficulty=FALLBACK_DIFFICULTY,
+            reason="The classifier output could not be parsed (%s); used the default difficulty %r."
+                   % (type(exc).__name__, FALLBACK_DIFFICULTY), **usage)
+
+    return parsed["difficulty"], _classifier_record(
+        used_call=True, status="success", method="model", difficulty=parsed["difficulty"],
+        reason=parsed.get("reason", "") if isinstance(parsed.get("reason"), str) else "", **usage)
+
+
 async def _run_attempt(tier: str, prompt: str, used: list):
     """One provider call plus its quality check. Returns (attempt, answer, retryable)."""
     started = time.perf_counter()
@@ -119,10 +233,7 @@ async def _run_attempt(tier: str, prompt: str, used: list):
 async def run_chat(req: ChatRequest, request_id: str):
     used: list = []
 
-    difficulty = _component("router.classify_prompt", router.classify_prompt, dev_stubs.classify_prompt,
-                            used, req.prompt)
-    if difficulty not in DIFFICULTIES:
-        raise ChatFailure(500, "INTERNAL_ERROR", "router.classify_prompt returned an invalid difficulty.", False)
+    difficulty, classifier = await _classify(req, used)
     tier = _component("router.choose_model", router.choose_model, dev_stubs.choose_model,
                       used, difficulty, req.mode, req.selected_model)
     if tier not in TIER_ORDER:
@@ -169,11 +280,14 @@ async def run_chat(req: ChatRequest, request_id: str):
             "difficulty": difficulty, "initial_model": initial, "final_model": final_tier,
             "answer": answer_text, "quality": quality, "escalated": escalated, "attempts": attempts,
             "impact": impact.model_dump(), "baseline": baseline.model_dump(), "savings": savings.model_dump(),
+            # Passed through untouched for the metrics member; not part of attempts.
+            "classifier": dict(classifier),
         }
         summary = Summary(**_component("storage.record_result", storage.record_result, dev_stubs.record_result,
                                        used, record))
         response = ChatResponse(
             request_id=request_id, session_id=req.session_id, answer=answer_text, difficulty=difficulty,
+            classifier=Classifier(**classifier),
             initial_model=initial, final_model=final_tier, quality=Quality(**quality), escalated=escalated,
             attempts=[Attempt(**a) for a in attempts], impact=impact, baseline=baseline, savings=savings,
             summary=summary,

@@ -1,8 +1,4 @@
-"""Owner: backend member. Environment configuration.
 
-Real secrets live only in backend/.env (ignored by git) or in the process
-environment. Nothing in this file contains a credential.
-"""
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,3 +70,25 @@ def provider_status() -> dict:
         cfg = get_tier_config(tier)
         out[tier] = {"configured": cfg.configured, "model": cfg.model or None}
     return out
+
+
+# ---------- Difficulty classifier (hybrid: rules first, model only if needed) ----------
+# Separate from PROVIDER_TIMEOUT_SECONDS on purpose: the classifier is a small,
+# optional helper call and must never hold up the answer for long.
+CLASSIFIER_TIER_DEFAULT = "small"
+CLASSIFIER_TIMEOUT_DEFAULT = 5.0
+
+
+def classifier_tier() -> str:
+    """Which tier runs the model classifier. Read at call time so tests can change it."""
+    tier = os.getenv("CLASSIFIER_TIER", CLASSIFIER_TIER_DEFAULT).strip().lower()
+    return tier if tier in TIERS else CLASSIFIER_TIER_DEFAULT
+
+
+def classifier_timeout_seconds() -> float:
+    """Total deadline for one classifier request. There is no automatic retry."""
+    try:
+        value = float(os.getenv("CLASSIFIER_TIMEOUT_SECONDS", str(CLASSIFIER_TIMEOUT_DEFAULT)))
+    except ValueError:
+        return CLASSIFIER_TIMEOUT_DEFAULT
+    return value if value > 0 else CLASSIFIER_TIMEOUT_DEFAULT
