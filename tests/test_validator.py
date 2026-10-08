@@ -86,6 +86,15 @@ class RealModelFormattingTests(unittest.TestCase):
     def test_thousands_commas(self):
         self.assertEqual(check_answer("What is 1000 + 234?", "1,234")["status"], "passed")
 
+    def test_the_word_equals_is_accepted(self):
+        # Observed live: "12 + 8 equals **20**."
+        result = check_answer("What is 12 + 8?", "12 + 8 equals **20**.")
+        self.assertEqual(result["status"], "passed")
+
+    def test_the_word_equals_with_a_wrong_result_fails(self):
+        result = check_answer("What is 12 + 8?", "12 + 8 equals 21")
+        self.assertEqual(result["status"], "failed")
+
     def test_equation_for_a_different_question_is_not_borrowed(self):
         # The equation does not restate this question, so there is no clear number.
         result = check_answer("What is 12 + 8?", "9 + 9 = 18")

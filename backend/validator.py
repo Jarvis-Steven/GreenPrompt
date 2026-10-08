@@ -32,6 +32,8 @@ def _normalise(text: str) -> str:
         text = text.replace(space, " ")
     for fancy, plain in _OPERATOR_ALIASES.items():
         text = text.replace(fancy, plain)
+    # Models often write "12 + 8 equals 20" instead of using "=".
+    text = re.sub(r"\b(?:equals|is equal to)\b", "=", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip()
 
 
