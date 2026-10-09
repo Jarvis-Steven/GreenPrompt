@@ -93,9 +93,16 @@ written to disk, never logged, and never returned: only a masked tail
 only and return 403 otherwise.
 
 Tier resolution order becomes:
-  1. a complete {TIER}_BASE_URL/_API_KEY/_MODEL trio (operator override)
-  2. a user-supplied key for that tier's provider
+  1. a user-supplied key for that tier's provider (runtime, in memory)
+  2. a complete {TIER}_BASE_URL/_API_KEY/_MODEL trio (operator override)
   3. the existing demo provider (Groq)
+
+The runtime key is FIRST by the lead's decision. A key the user has just
+pasted must take effect immediately; previously an operator trio left in
+backend/.env kept winning, so the UI reported "connected" while the tier
+still called the demo account. Disconnecting the key falls back to the
+trio, and then to the demo provider. Only the tier whose provider the key
+belongs to is affected; the other two keep their existing source.
 
 GET /models gains two OPTIONAL fields: "tier_source" ("env", "your key" or
 "demo (Groq)") and "user_keys" (connected flag plus masked tail). Clients

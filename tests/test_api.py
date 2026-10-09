@@ -673,13 +673,41 @@ class KeyPrecedenceTests(unittest.TestCase):
         self.assertEqual(config.get_tier_config("medium").model, "gpt-6.1-sol")
         self.assertEqual(config.get_tier_config("big").model, "claude-opus-5-5")
 
-    def test_explicit_env_trio_still_wins(self):
-        runtime_keys.set_key("gemini", FAKE_KEY)
+    def test_a_pasted_key_outranks_a_complete_env_trio(self):
+        # Lead's decision: a key the user just pasted must take effect, rather
+        # than appearing connected while an operator trio silently wins.
         override = {"SMALL_BASE_URL": "https://override.test/v1",
                     "SMALL_API_KEY": "operator-key", "SMALL_MODEL": "override-model"}
         with patch.dict(os.environ, override):
             self.assertEqual(config.get_tier_config("small").model, "override-model")
             self.assertEqual(config.tier_source("small"), "env")
+
+            runtime_keys.set_key("gemini", FAKE_KEY)
+            cfg = config.get_tier_config("small")
+            self.assertEqual(cfg.model, "gemini-3.5-flash-lite")
+            self.assertIn("generativelanguage", cfg.base_url)
+            self.assertEqual(config.tier_source("small"), "your key")
+
+    def test_disconnecting_the_key_returns_to_the_env_trio(self):
+        override = {"SMALL_BASE_URL": "https://override.test/v1",
+                    "SMALL_API_KEY": "operator-key", "SMALL_MODEL": "override-model"}
+        with patch.dict(os.environ, override):
+            runtime_keys.set_key("gemini", FAKE_KEY)
+            self.assertEqual(config.tier_source("small"), "your key")
+
+            runtime_keys.clear_key("gemini")
+            self.assertEqual(config.get_tier_config("small").model, "override-model")
+            self.assertEqual(config.tier_source("small"), "env")
+
+    def test_other_tiers_are_unaffected_by_one_providers_key(self):
+        trios = {f"{t}_{part}": v for t, v in (("SMALL", "s"), ("MEDIUM", "m"), ("BIG", "b"))
+                 for part, v in (("BASE_URL", f"https://{v}.test/v1"),
+                                 ("API_KEY", f"{v}-key"), ("MODEL", f"{v}-model"))}
+        with patch.dict(os.environ, trios):
+            runtime_keys.set_key("gemini", FAKE_KEY)
+            self.assertEqual(config.tier_source("small"), "your key")
+            self.assertEqual(config.tier_source("medium"), "env")
+            self.assertEqual(config.tier_source("big"), "env")
 
     def test_without_a_user_key_the_demo_provider_is_used(self):
         with patch.dict(os.environ, {"GROQ_API_KEY": "demo-key-value"}):
