@@ -63,7 +63,9 @@ Normalize validation errors to the same envelope. No streaming: frontend shows a
 - validator.check_answer(prompt, answer) -> {status, reason}
 - router.next_model(current_tier, quality_status, call_status) -> tier or None
 - await model_clients.call_model(tier, prompt) -> {answer, model_name, latency_ms, input_tokens, output_tokens}; backend normalizes provider errors into attempts.
-- metrics.calculate_metrics(attempts) -> {impact, baseline, savings}
+- metrics.calculate_metrics(attempts, *, classifier=None) -> {impact, baseline, savings}
+  plus, ONLY when classifier.used is true, the optional {classifier_overhead,
+  impact_including_classifier} (PROPOSED, see Optional fields below)
 - storage.record_result(record) -> summary
 
 Completed storage records contain request_id, session_id, prompt, mode, difficulty, initial_model, final_model, answer, quality, escalated, attempts, impact, baseline, savings. Store once per request_id.
@@ -71,6 +73,25 @@ Completed storage records contain request_id, session_id, prompt, mode, difficul
 ## Accounting
 
 Illustrative per-call energy/cost: Small 0.03 Wh / INR 0.002; Medium 0.12 Wh / INR 0.010; Big 0.30 Wh / INR 0.030. CO2 factor 0.727 g/Wh; water factor 1 mL/Wh. Not measurements or actual provider prices.
+
+## Optional fields (PROPOSED, additive; not part of v1)
+
+`classifier_overhead` and `impact_including_classifier` are OPTIONAL top-level
+response fields. They are present only when the hybrid difficulty classifier
+actually attempted a provider call (`classifier.used == true`), and absent
+otherwise. Clients MUST treat them as optional and MUST NOT require them.
+
+They exist because the classifier makes a real extra model call on roughly 60%
+of requests. In a live run on 2026-10-09 that was 2,830 real tokens, 27.4% of
+all tokens spent, counted nowhere, so reported savings were overstated.
+
+`classifier_overhead` is an estimate of one Small-tier call using the same
+constants as attempts (0.03 Wh, CO2 0.727 g/Wh, water 1 mL/Wh, INR 0.002).
+`impact_including_classifier` is `impact` plus that overhead.
+
+`impact`, `baseline` and `savings` keep their existing v1 definitions exactly
+and are NOT changed by this addition. A failed classifier call is still
+charged, matching the rule that every attempted call is charged.
 
 Sum all attempts, including errors, using full tier estimates as a simplifying assumption. Baseline is one Big call per completed prompt. Savings = baseline minus impact. Preserve negatives and full calculation precision.
 

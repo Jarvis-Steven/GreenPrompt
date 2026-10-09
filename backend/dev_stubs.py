@@ -45,7 +45,7 @@ def next_model(current_tier: str, quality_status: str, call_status: str):
     return TIERS[index + 1] if index + 1 < len(TIERS) else None
 
 
-def calculate_metrics(attempts: list) -> dict:
+def calculate_metrics(attempts: list, *, classifier=None) -> dict:
     # Zeros on purpose: real numbers belong to the metrics member.
     zero = {"energy_wh": 0.0, "co2_g": 0.0, "water_ml": 0.0, "cost_inr": 0.0}
     return {"impact": {"estimated": True, **zero}, "baseline": dict(zero), "savings": dict(zero)}
