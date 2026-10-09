@@ -67,10 +67,20 @@ function gpMetricTable(impact, savings) {
 
 /* ---------- the panel ---------- */
 function renderInsights(data) {
+  if (!data) return;
+
+  // The badge and the header counter are independent of the detail panel and
+  // must keep working now that the duplicate section has been removed.
+  updateInsightsBadge(data);
+  updateHeaderSaving(data.summary && data.summary.cumulative_savings);
+
+  // The detailed rows live in the frontend member's original panel
+  // (renderRouting / renderImpact / renderDetails in script.js). This block
+  // only runs if the optional extra section is present.
   const live = document.getElementById('insights-live');
   const empty = document.getElementById('insights-empty');
-  if (!live || !data) return;
-  empty.hidden = true;
+  if (!live) return;
+  if (empty) empty.hidden = true;
   live.hidden = false;
 
   const mock = document.getElementById('insights-mock');
@@ -139,8 +149,6 @@ function renderInsights(data) {
       cumulative.energy_wh < 0 ? 'negative' : ''));
   }
 
-  updateInsightsBadge(data);
-  updateHeaderSaving(s.cumulative_savings);
 }
 
 /* Badge shows the latest REAL saving only. */

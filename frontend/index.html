@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=10" />
+  <link rel="stylesheet" href="style.css?v=11" />
 </head>
 <body>
   <header class="site-header">
@@ -75,7 +75,7 @@
   </main>
   <button class="matrix-launcher insights-fab" id="matrix-launcher" type="button" aria-controls="model-matrix" aria-expanded="false" aria-label="Open request insights"><span class="fab-glyph" aria-hidden="true">◑</span><span class="fab-badge" id="insights-badge" hidden></span></button>
   <div class="drawer-scrim" id="drawer-scrim" hidden></div>
-  <aside class="matrix-drawer" id="model-matrix" aria-label="Workspace sidebar" aria-hidden="true"><section class="drawer-section insights-live" aria-labelledby="insights-live-title"><div class="section-title"><h3 id="insights-live-title">Request insights</h3><span id="insights-mock" hidden>DEMO MOCK</span></div><p class="insights-empty" id="insights-empty">Send a prompt and the real routing path, quality check and resource estimates for that answer will appear here.</p><div id="insights-live" hidden><div class="insights-block" id="insights-path"></div><div class="insights-block" id="insights-quality"></div><div class="insights-block" id="insights-impact"></div><div class="insights-block" id="insights-overhead"></div><div class="insights-block" id="insights-summary"></div></div><p class="insights-note">Figures are estimates from per-tier assumptions, not measured energy.</p></section>
+  <aside class="matrix-drawer" id="model-matrix" aria-label="Workspace sidebar" aria-hidden="true">
     <header class="drawer-header"><div><p class="eyebrow">WORKSPACE SIDEBAR</p><h2>Request insights</h2><p>Automatic routing and resource results from the latest backend response.</p></div><button class="drawer-close" id="matrix-close" type="button" aria-label="Close workspace sidebar">×</button></header>
     <section class="drawer-section resource-highlights" aria-labelledby="highlights-title"><div class="section-title"><h3 id="highlights-title">Resource impact</h3><span>BACKEND ESTIMATE</span></div><p>Compared with always using the Big tier. Figures are estimates from per-tier assumptions, not measured energy.</p><div class="highlight-grid"><article><span>Cost saved</span><strong id="highlight-cost">₹0.000</strong><small>Estimated</small></article><article><span>Energy reduction</span><strong id="highlight-energy">0.00 Wh</strong><small>Estimated</small></article><article><span>Water cooling saved</span><strong id="highlight-water">0.00 mL</strong><small>Estimated</small></article></div></section>
     <section class="drawer-section request-drawer"><div class="section-title"><h3>Routing &amp; quality</h3><span id="request-status">Waiting</span></div><div id="routing-content" class="placeholder-content"><p>Your latest request will appear here.</p></div></section>
@@ -90,7 +90,7 @@
   </aside>
   <div class="toast" id="toast" role="status" hidden></div>
   <script src="markdown.js?v=2"></script>
-  <script src="insights.js?v=3"></script>
+  <script src="insights.js?v=4"></script>
   <script src="script.js?v=4"></script>
 </body>
 </html>
