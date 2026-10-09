@@ -150,3 +150,50 @@ h3.md-h{font-size:17px}h4.md-h{font-size:15px}h5.md-h{font-size:14px}h6.md-h{fon
   aside#model-matrix.matrix-drawer{transform:translateY(100%)}
   aside#model-matrix.matrix-drawer.open{transform:translateY(0)}
 }
+
+/* ===== PROPOSAL (ux-v2): bug fixes a, b, c =====
+   Appended last so these win without editing anyone's earlier rules. */
+
+/* (b) The launcher's base rule rotates EVERY span inside it by 180deg,
+   which is what mirrored the badge text. Scope the rotation to the glyph
+   and explicitly un-rotate the badge. */
+.insights-fab span{transform:none}
+.insights-fab .fab-glyph{transform:none;writing-mode:horizontal-tb;direction:ltr}
+.insights-fab .fab-badge{transform:none;writing-mode:horizontal-tb;direction:ltr;
+  text-orientation:mixed;rotate:none}
+
+/* (a) "How it works" must be ordinary flow BELOW the chat, never over it.
+   The chat view gets an opaque background and its own stacking context so
+   nothing can show through a code block. */
+#chat-view{position:relative;z-index:1;background:var(--bg)}
+#chat-view .workspace,#chat-view .chat-panel{background:var(--bg)}
+.how-section{position:static;z-index:auto;clear:both;background:var(--bg);
+  border-top:1px solid var(--line);margin-top:8px}
+.how-section,.process-list,.process-list li{transform:none}
+
+/* (c) Consolidate the drawer. Eight competing transform rules had accumulated
+   across appended sections; these two (desktop) and two (mobile) are the only
+   ones that should decide position. Highest specificity in the file, last. */
+aside#model-matrix.matrix-drawer{
+  transform:translateX(100%);transition:transform .24s ease;z-index:30}
+aside#model-matrix.matrix-drawer.open{transform:translateX(0)}
+
+@media (max-width:600px){
+  aside#model-matrix.matrix-drawer{
+    position:fixed;inset:auto 0 0 0;top:auto;left:0;right:0;bottom:0;
+    width:100vw;max-width:100vw;height:auto;max-height:82vh;
+    border-radius:16px 16px 0 0;border-left:0;overflow-y:auto;
+    transform:translateY(100%)}
+  aside#model-matrix.matrix-drawer.open{transform:translateY(0)}
+}
+
+@media (prefers-reduced-motion: reduce){
+  aside#model-matrix.matrix-drawer{transition:none}
+}
+
+/* Last resort for the mobile sheet: the cascade above should already win, so
+   if this !important is what finally moves it, the real conflict is elsewhere
+   and the frontend member should hunt it rather than keep this line. */
+@media (max-width:600px){
+  aside#model-matrix.matrix-drawer.open{transform:translateY(0)!important}
+}
