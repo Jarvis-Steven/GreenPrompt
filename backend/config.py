@@ -91,17 +91,30 @@ def get_tier_config(tier: str) -> TierConfig:
     """A tier's provider settings, read at call time (so tests can change them).
 
     Precedence:
-      1. An explicit, complete {TIER}_BASE_URL + _API_KEY + _MODEL trio. These
-         are the operator's deliberate per-tier override and always win.
-      2. The first enabled catalog entry whose key_env variable is set.
-      3. Whatever partial {TIER}_* values exist (so an incomplete tier still
+      1. A key the user pasted at runtime for this tier's provider.
+      2. An explicit, complete {TIER}_BASE_URL + _API_KEY + _MODEL trio.
+      3. The first enabled catalog entry whose key_env variable is set.
+      4. Whatever partial {TIER}_* values exist (so an incomplete tier still
          reports CONFIG_MISSING exactly as before).
 
-    Explicit variables win over the catalog on purpose: a provider-wide key such
-    as GROQ_API_KEY may be present in the machine environment and differ from
-    the per-tier key, and silently preferring it would swap credentials under a
+    The runtime key is first by decision of the lead: a pasted key must take
+    effect immediately, rather than appearing "connected" while an operator
+    trio in backend/.env silently keeps winning. Disconnecting it falls back
+    to the trio, then to the demo provider.
+
+    The env trio still beats the catalog: a provider-wide key such as
+    GROQ_API_KEY may exist in the machine environment and differ from the
+    per-tier key, and silently preferring it would swap credentials under a
     working deployment.
     """
+    # A key the user pasted into the website wins. It is the most explicit,
+    # most recent instruction available, and it is what the person sitting at
+    # the machine just asked for; an operator trio left in backend/.env must
+    # not silently override it. Disconnecting the key restores the trio.
+    user = user_key_config(tier)
+    if user is not None and user.configured:
+        return user
+
     prefix = tier.upper()
     env = TierConfig(
         tier=tier,
@@ -123,6 +136,37 @@ def get_tier_config(tier: str) -> TierConfig:
     return env
 
 
+def catalog_entry_for_provider_tier(provider: str, tier: str):
+    """The catalog row for one provider at one tier, enabled or not.
+
+    PROPOSED (bring your own key): a user-supplied key activates the row for
+    that provider even when the catalog ships it disabled, because "enabled"
+    only describes what the demo account can reach.
+    """
+    for entry in load_catalog():
+        if entry.get("provider") == provider and entry.get("tier") == tier:
+            return entry
+    return None
+
+
+def user_key_config(tier: str):
+    """TierConfig built from a runtime user key, or None when there is none."""
+    from backend import runtime_keys  # local import keeps config import-light
+
+    provider = runtime_keys.provider_for_tier(tier)
+    if not provider or not runtime_keys.has_key(provider):
+        return None
+    entry = catalog_entry_for_provider_tier(runtime_keys.CATALOG_PROVIDER[provider], tier)
+    if entry is None:
+        return None
+    return TierConfig(
+        tier=tier,
+        base_url=(entry.get("base_url") or "").strip().rstrip("/"),
+        api_key=runtime_keys.get_key(provider),
+        model=(entry.get("id") or "").strip(),
+    )
+
+
 def tier_source(tier: str) -> str:
     """Where this tier's settings come from: "env", "catalog", or "none".
 
@@ -130,10 +174,12 @@ def tier_source(tier: str) -> str:
     override and a catalog entry naming the same model are indistinguishable
     that way.
     """
+    if user_key_config(tier) is not None:
+        return "your key"
     prefix = tier.upper()
     if all(os.getenv(f"{prefix}_{part}", "").strip() for part in ("BASE_URL", "API_KEY", "MODEL")):
         return "env"
-    return "catalog" if catalog_entry_for_tier(tier) is not None else "none"
+    return "demo (Groq)" if catalog_entry_for_tier(tier) is not None else "none"
 
 
 def catalog_status() -> list:

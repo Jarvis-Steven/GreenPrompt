@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from backend import dev_stubs, metrics, model_clients, router, storage, validator
+from backend import dev_stubs, metrics, model_clients, router, runtime_keys, storage, validator
 from backend.config import (
     ALLOWED_ORIGINS, catalog_status, dev_stubs_enabled, get_tier_config, provider_status,
     tier_source,
@@ -354,6 +354,9 @@ def models():
     return {
         "models": rows,
         "active": {tier: _active_for(tier, rows) for tier in TIER_ORDER},
+        # PROPOSED: where each tier's settings come from right now.
+        "tier_source": {tier: tier_source(tier) for tier in TIER_ORDER},
+        "user_keys": runtime_keys.status(),
         "tier_note": "tier is GreenPrompt's own size label, not an official provider ranking.",
     }
 
@@ -368,6 +371,86 @@ def _active_for(tier: str, rows: list):
     if not cfg.configured:
         return {"id": None, "source": "none"}
     return {"id": cfg.model, "source": tier_source(tier)}
+
+
+# ---------------------------------------------------------------------------
+# PROPOSED (bring your own key). Additive endpoints, pending Jarvis's approval.
+# Keys are held in memory only and are never returned, logged or persisted.
+# ---------------------------------------------------------------------------
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def _is_local(request: Request) -> bool:
+    """Only the person sitting at this machine may manage keys."""
+    host = getattr(request.client, "host", None)
+    return host in LOOPBACK_HOSTS
+
+
+def _keys_payload(provider: str) -> dict:
+    return {"provider": provider, "connected": runtime_keys.has_key(provider),
+            "masked": runtime_keys.masked(provider)}
+
+
+@app.post("/config/keys")
+async def set_key(request: Request):
+    request_id = str(uuid4())
+    if not _is_local(request):
+        return _error(request_id, 403, "VALIDATION_ERROR",
+                      "Key management is only available from this machine.", False)
+    try:
+        body = await request.json()
+    except Exception:
+        return _error(request_id, 422, "VALIDATION_ERROR", "Body must be JSON.", False)
+    if not isinstance(body, dict):
+        return _error(request_id, 422, "VALIDATION_ERROR", "Body must be a JSON object.", False)
+    provider = str(body.get("provider", "")).strip().lower()
+    try:
+        # The exception message never contains the key or any part of it.
+        runtime_keys.set_key(provider, body.get("api_key"))
+    except runtime_keys.InvalidKey as exc:
+        return _error(request_id, 422, "VALIDATION_ERROR", str(exc), False)
+    log.info("runtime key stored for provider=%s (value never logged)", provider)
+    return _keys_payload(provider)
+
+
+@app.delete("/config/keys/{provider}")
+def delete_key(provider: str, request: Request):
+    request_id = str(uuid4())
+    if not _is_local(request):
+        return _error(request_id, 403, "VALIDATION_ERROR",
+                      "Key management is only available from this machine.", False)
+    provider = provider.strip().lower()
+    try:
+        runtime_keys.clear_key(provider)
+    except runtime_keys.InvalidKey as exc:
+        return _error(request_id, 422, "VALIDATION_ERROR", str(exc), False)
+    return _keys_payload(provider)
+
+
+@app.get("/config/keys")
+def list_keys(request: Request):
+    request_id = str(uuid4())
+    if not _is_local(request):
+        return _error(request_id, 403, "VALIDATION_ERROR",
+                      "Key management is only available from this machine.", False)
+    return {"providers": runtime_keys.status(),
+            "tier_provider": runtime_keys.TIER_PROVIDER}
+
+
+@app.post("/config/keys/{provider}/test")
+async def test_key(provider: str, request: Request):
+    """One cheap read-only check that the key works. Never returns the key."""
+    request_id = str(uuid4())
+    if not _is_local(request):
+        return _error(request_id, 403, "VALIDATION_ERROR",
+                      "Key management is only available from this machine.", False)
+    provider = provider.strip().lower()
+    if provider not in runtime_keys.PROVIDERS:
+        return _error(request_id, 422, "VALIDATION_ERROR", "Unknown provider.", False)
+    if not runtime_keys.has_key(provider):
+        return _error(request_id, 422, "VALIDATION_ERROR", "No key stored for this provider.", False)
+    result = await model_clients.verify_key(provider)
+    return {"provider": provider, **result}
 
 
 @app.post("/chat")
