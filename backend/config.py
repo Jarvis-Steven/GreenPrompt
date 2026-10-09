@@ -112,6 +112,11 @@ def get_tier_config(tier: str) -> TierConfig:
     if env.configured:
         return env
 
+    # PROPOSED: a key the user pasted into the website, held in memory only.
+    user = user_key_config(tier)
+    if user is not None and user.configured:
+        return user
+
     entry = catalog_entry_for_tier(tier)
     if entry is not None:
         return TierConfig(
@@ -121,6 +126,37 @@ def get_tier_config(tier: str) -> TierConfig:
             model=(entry.get("id") or "").strip(),
         )
     return env
+
+
+def catalog_entry_for_provider_tier(provider: str, tier: str):
+    """The catalog row for one provider at one tier, enabled or not.
+
+    PROPOSED (bring your own key): a user-supplied key activates the row for
+    that provider even when the catalog ships it disabled, because "enabled"
+    only describes what the demo account can reach.
+    """
+    for entry in load_catalog():
+        if entry.get("provider") == provider and entry.get("tier") == tier:
+            return entry
+    return None
+
+
+def user_key_config(tier: str):
+    """TierConfig built from a runtime user key, or None when there is none."""
+    from backend import runtime_keys  # local import keeps config import-light
+
+    provider = runtime_keys.provider_for_tier(tier)
+    if not provider or not runtime_keys.has_key(provider):
+        return None
+    entry = catalog_entry_for_provider_tier(runtime_keys.CATALOG_PROVIDER[provider], tier)
+    if entry is None:
+        return None
+    return TierConfig(
+        tier=tier,
+        base_url=(entry.get("base_url") or "").strip().rstrip("/"),
+        api_key=runtime_keys.get_key(provider),
+        model=(entry.get("id") or "").strip(),
+    )
 
 
 def tier_source(tier: str) -> str:
@@ -133,7 +169,9 @@ def tier_source(tier: str) -> str:
     prefix = tier.upper()
     if all(os.getenv(f"{prefix}_{part}", "").strip() for part in ("BASE_URL", "API_KEY", "MODEL")):
         return "env"
-    return "catalog" if catalog_entry_for_tier(tier) is not None else "none"
+    if user_key_config(tier) is not None:
+        return "your key"
+    return "demo (Groq)" if catalog_entry_for_tier(tier) is not None else "none"
 
 
 def catalog_status() -> list:

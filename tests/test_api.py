@@ -14,7 +14,8 @@ from unittest.mock import patch
 import httpx
 from fastapi.testclient import TestClient
 
-from backend import config, metrics, model_clients, router, storage, validator
+from backend import app as app_module
+from backend import config, metrics, model_clients, router, runtime_keys, storage, validator
 from backend.config import TIERS
 from backend.app import app
 from backend.model_clients import ProviderError
@@ -598,6 +599,241 @@ class ClassifierConfigTests(unittest.TestCase):
             self.assertEqual(config.classifier_timeout_seconds(), 5.0)
 
 
+# ---------- PROPOSED: bring your own key ----------
+# FAKE_KEY is a test fixture. It is not a credential and reaches no provider.
+FAKE_KEY = "fake-test-key-abcdefghijklmnop1234"
+
+
+class RuntimeKeyStoreTests(unittest.TestCase):
+    """The store must never expose a raw key, by any route."""
+
+    def setUp(self):
+        runtime_keys.clear_all()
+        self.addCleanup(runtime_keys.clear_all)
+
+    def test_set_returns_only_the_masked_tail(self):
+        masked = runtime_keys.set_key("openai", FAKE_KEY)
+        self.assertEqual(masked, "..." + FAKE_KEY[-4:])
+        self.assertNotIn(FAKE_KEY, masked)
+
+    def test_repr_and_str_never_contain_the_key(self):
+        runtime_keys.set_key("openai", FAKE_KEY)
+        store = runtime_keys._store
+        for rendering in (repr(store), str(store), f"{store}"):
+            self.assertNotIn(FAKE_KEY, rendering)
+            self.assertIn("never shown", rendering)
+
+    def test_status_never_contains_the_key(self):
+        runtime_keys.set_key("gemini", FAKE_KEY)
+        self.assertNotIn(FAKE_KEY, json.dumps(runtime_keys.status()))
+
+    def test_validation_errors_never_quote_the_key(self):
+        for bad in ("zqx1", FAKE_KEY + " zzz", "q" * 9999):
+            with self.subTest(bad=bad[:12]):
+                with self.assertRaises(runtime_keys.InvalidKey) as ctx:
+                    runtime_keys.set_key("openai", bad)
+                self.assertNotIn(bad, str(ctx.exception))
+
+    def test_unknown_provider_rejected(self):
+        with self.assertRaises(runtime_keys.InvalidKey):
+            runtime_keys.set_key("not-a-provider", FAKE_KEY)
+
+    def test_clear_removes_it(self):
+        runtime_keys.set_key("anthropic", FAKE_KEY)
+        self.assertTrue(runtime_keys.has_key("anthropic"))
+        self.assertTrue(runtime_keys.clear_key("anthropic"))
+        self.assertFalse(runtime_keys.has_key("anthropic"))
+        self.assertEqual(runtime_keys.get_key("anthropic"), "")
+
+    def test_tier_provider_mapping_is_the_agreed_one(self):
+        self.assertEqual(runtime_keys.TIER_PROVIDER,
+                         {"small": "gemini", "medium": "openai", "big": "anthropic"})
+
+
+class KeyPrecedenceTests(unittest.TestCase):
+    """env trio > user key > demo (Groq)."""
+
+    def setUp(self):
+        runtime_keys.clear_all()
+        self.addCleanup(runtime_keys.clear_all)
+        cleared = {f"{t}_{s}": "" for t in ("SMALL", "MEDIUM", "BIG")
+                   for s in ("BASE_URL", "API_KEY", "MODEL")}
+        self.enterContext(patch.dict(os.environ, cleared))
+
+    def test_user_key_selects_that_providers_catalog_row(self):
+        runtime_keys.set_key("gemini", FAKE_KEY)
+        cfg = config.get_tier_config("small")
+        self.assertEqual(cfg.model, "gemini-3.5-flash-lite")
+        self.assertIn("generativelanguage", cfg.base_url)
+        self.assertEqual(config.tier_source("small"), "your key")
+
+    def test_each_tier_maps_to_its_own_provider(self):
+        runtime_keys.set_key("openai", FAKE_KEY)
+        runtime_keys.set_key("anthropic", FAKE_KEY)
+        self.assertEqual(config.get_tier_config("medium").model, "gpt-6.1-sol")
+        self.assertEqual(config.get_tier_config("big").model, "claude-opus-5-5")
+
+    def test_explicit_env_trio_still_wins(self):
+        runtime_keys.set_key("gemini", FAKE_KEY)
+        override = {"SMALL_BASE_URL": "https://override.test/v1",
+                    "SMALL_API_KEY": "operator-key", "SMALL_MODEL": "override-model"}
+        with patch.dict(os.environ, override):
+            self.assertEqual(config.get_tier_config("small").model, "override-model")
+            self.assertEqual(config.tier_source("small"), "env")
+
+    def test_without_a_user_key_the_demo_provider_is_used(self):
+        with patch.dict(os.environ, {"GROQ_API_KEY": "demo-key-value"}):
+            self.assertEqual(config.tier_source("small"), "demo (Groq)")
+            self.assertEqual(config.get_tier_config("small").model, "openai/gpt-oss-20b")
+
+
+class KeyEndpointTests(unittest.TestCase):
+    def setUp(self):
+        runtime_keys.clear_all()
+        self.addCleanup(runtime_keys.clear_all)
+        # TestClient reports host "testclient"; treat it as local for the
+        # allowed paths. test_rejects_a_non_loopback_client patches it back.
+        self.enterContext(patch.object(app_module, "LOOPBACK_HOSTS",
+                                       {"127.0.0.1", "::1", "localhost", "testclient"}))
+
+    def test_post_stores_and_returns_masked_only(self):
+        r = client.post("/config/keys", json={"provider": "openai", "api_key": FAKE_KEY})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"provider": "openai", "connected": True,
+                                    "masked": "..." + FAKE_KEY[-4:]})
+        self.assertNotIn(FAKE_KEY, r.text)
+
+    def test_delete_disconnects(self):
+        client.post("/config/keys", json={"provider": "gemini", "api_key": FAKE_KEY})
+        r = client.delete("/config/keys/gemini")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["connected"])
+        self.assertFalse(runtime_keys.has_key("gemini"))
+
+    def test_rejects_a_non_loopback_client(self):
+        # TestClient reports 'testclient' as the host, which is not loopback.
+        with patch.object(app_module, "LOOPBACK_HOSTS", {"203.0.113.9"}):
+            for call in (lambda: client.post("/config/keys",
+                                             json={"provider": "openai", "api_key": FAKE_KEY}),
+                         lambda: client.delete("/config/keys/openai"),
+                         lambda: client.get("/config/keys")):
+                response = call()
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.json()["error"]["code"], "VALIDATION_ERROR")
+
+    def test_invalid_input_is_rejected_without_echoing_it(self):
+        r = client.post("/config/keys", json={"provider": "openai", "api_key": "tiny"})
+        self.assertEqual(r.status_code, 422)
+        self.assertNotIn("tiny", r.json()["error"]["message"])
+
+    def test_models_shows_source_and_never_a_key(self):
+        client.post("/config/keys", json={"provider": "anthropic", "api_key": FAKE_KEY})
+        r = client.get("/models")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn(FAKE_KEY, r.text)
+        body = r.json()
+        self.assertIn("tier_source", body)
+        self.assertTrue(body["user_keys"]["anthropic"]["connected"])
+        self.assertEqual(body["user_keys"]["anthropic"]["masked"], "..." + FAKE_KEY[-4:])
+
+    def test_chat_contract_is_unchanged_by_this_feature(self):
+        with Harness(FakeProvider({"small": ok()})):
+            data = post().json()
+        for key in ("request_id", "session_id", "answer", "difficulty", "initial_model",
+                    "final_model", "quality", "escalated", "attempts", "impact",
+                    "baseline", "savings", "summary"):
+            self.assertIn(key, data)
+
+
+class AnthropicAdapterTests(unittest.IsolatedAsyncioTestCase):
+    """Native Messages API adapter, against a fake transport. No network."""
+
+    ENV = {"BIG_BASE_URL": "https://api.anthropic.com/v1", "BIG_API_KEY": FAKE_KEY,
+           "BIG_MODEL": "claude-opus-5-5"}
+
+    def setUp(self):
+        self.requests = []
+        self.env = patch.dict(os.environ, self.ENV)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def use_transport(self, handler):
+        def recording(request):
+            self.requests.append(request)
+            return handler(request)
+        return patch.object(model_clients, "_make_client",
+                            lambda: httpx.AsyncClient(transport=httpx.MockTransport(recording)))
+
+    async def test_parses_content_blocks_and_usage(self):
+        body = {"content": [{"type": "text", "text": "Hello"}, {"type": "text", "text": " there"}],
+                "usage": {"input_tokens": 11, "output_tokens": 4}}
+        with self.use_transport(lambda r: httpx.Response(200, json=body)):
+            result = await model_clients.call_model("big", "hi")
+        self.assertEqual(result["answer"], "Hello there")
+        self.assertEqual((result["input_tokens"], result["output_tokens"]), (11, 4))
+        request = self.requests[0]
+        self.assertEqual(str(request.url), "https://api.anthropic.com/v1/messages")
+        self.assertEqual(request.headers["anthropic-version"], model_clients.ANTHROPIC_VERSION)
+
+    async def test_key_travels_in_a_header_not_the_url(self):
+        body = {"content": [{"type": "text", "text": "ok"}], "usage": {}}
+        with self.use_transport(lambda r: httpx.Response(200, json=body)):
+            await model_clients.call_model("big", "hi")
+        request = self.requests[0]
+        self.assertEqual(request.headers["x-api-key"], FAKE_KEY)
+        self.assertNotIn(FAKE_KEY, str(request.url))
+
+    async def assert_code(self, handler, code, retryable):
+        with self.use_transport(handler):
+            with self.assertRaises(ProviderError) as ctx:
+                await model_clients.call_model("big", "hi")
+        self.assertEqual(ctx.exception.code, code)
+        self.assertEqual(ctx.exception.retryable, retryable)
+        self.assertNotIn(FAKE_KEY, ctx.exception.message)
+        return ctx.exception
+
+    async def test_error_codes_map_to_ours(self):
+        await self.assert_code(lambda r: httpx.Response(401, text="no"), "AUTH_FAILED", False)
+        await self.assert_code(lambda r: httpx.Response(429, text="slow"), "RATE_LIMITED", True)
+        await self.assert_code(lambda r: httpx.Response(529, text="busy"), "PROVIDER_ERROR", True)
+        await self.assert_code(lambda r: httpx.Response(400, text="bad"), "PROVIDER_ERROR", False)
+
+    async def test_empty_and_malformed_bodies_are_errors(self):
+        await self.assert_code(
+            lambda r: httpx.Response(200, json={"content": [], "usage": {}}), "EMPTY_ANSWER", True)
+        await self.assert_code(lambda r: httpx.Response(200, text="<html>"), "BAD_RESPONSE", True)
+
+    async def test_timeout_maps_to_our_timeout_code(self):
+        def handler(request):
+            raise httpx.ReadTimeout("slow", request=request)
+        await self.assert_code(handler, "TIMEOUT", True)
+
+
+class VerifyKeyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        runtime_keys.clear_all()
+        self.addCleanup(runtime_keys.clear_all)
+
+    def transport(self, handler):
+        return patch.object(model_clients, "_make_client",
+                            lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    async def test_success_and_failure_codes_without_leaking(self):
+        runtime_keys.set_key("openai", FAKE_KEY)
+        cases = [(200, True, "OK"), (401, False, "AUTH_FAILED"),
+                 (429, False, "RATE_LIMITED"), (500, False, "PROVIDER_ERROR")]
+        for status, ok_flag, code in cases:
+            with self.subTest(status=status):
+                with self.transport(lambda r, s=status: httpx.Response(s, text="body")):
+                    result = await model_clients.verify_key("openai")
+                self.assertEqual((result["ok"], result["code"]), (ok_flag, code))
+                self.assertNotIn(FAKE_KEY, json.dumps(result))
+
+    async def test_no_key_stored(self):
+        result = await model_clients.verify_key("gemini")
+        self.assertEqual(result["code"], "NO_KEY")
+
+
 class ModelClientTests(unittest.IsolatedAsyncioTestCase):
     """Provider adapter against a fake HTTP transport (TEST FAKE, no network)."""
 
@@ -865,7 +1101,7 @@ class ModelsEndpointTests(unittest.TestCase):
                 patch.dict(os.environ, {"FIXTURE_SET_KEY": "k", **cleared}):
             os.environ.pop("FIXTURE_UNSET_KEY", None)
             data = client.get("/models").json()
-        self.assertEqual(data["active"]["small"], {"id": "fixture/small-b", "source": "catalog"})
+        self.assertEqual(data["active"]["small"], {"id": "fixture/small-b", "source": "demo (Groq)"})
         self.assertEqual(data["active"]["medium"]["source"], "none")
         self.assertIsNone(data["active"]["big"]["id"])
 

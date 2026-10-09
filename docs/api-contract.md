@@ -74,6 +74,33 @@ Completed storage records contain request_id, session_id, prompt, mode, difficul
 
 Illustrative per-call energy/cost: Small 0.03 Wh / INR 0.002; Medium 0.12 Wh / INR 0.010; Big 0.30 Wh / INR 0.030. CO2 factor 0.727 g/Wh; water factor 1 mL/Wh. Not measurements or actual provider prices.
 
+## Bring your own key (PROPOSED, additive; not part of v1)
+
+OPTIONAL endpoints, pending the lead's approval. They do not change /chat.
+
+- POST /config/keys {provider, api_key} -> {provider, connected, masked}
+- DELETE /config/keys/{provider} -> same shape
+- GET /config/keys -> {providers: {provider: {connected, masked}}, tier_provider}
+- POST /config/keys/{provider}/test -> {provider, ok, code, message}
+
+provider is one of gemini, openai, anthropic. Tier mapping is fixed:
+small = gemini, medium = openai, big = anthropic, each using that
+provider's model AT THAT TIER from backend/model_catalog.json.
+
+Keys are held IN MEMORY ONLY for the life of the process. They are never
+written to disk, never logged, and never returned: only a masked tail
+("...last4") is ever sent back. All four endpoints accept loopback clients
+only and return 403 otherwise.
+
+Tier resolution order becomes:
+  1. a complete {TIER}_BASE_URL/_API_KEY/_MODEL trio (operator override)
+  2. a user-supplied key for that tier's provider
+  3. the existing demo provider (Groq)
+
+GET /models gains two OPTIONAL fields: "tier_source" ("env", "your key" or
+"demo (Groq)") and "user_keys" (connected flag plus masked tail). Clients
+must treat both as optional.
+
 ## Optional fields (PROPOSED, additive; not part of v1)
 
 `classifier_overhead` and `impact_including_classifier` are OPTIONAL top-level
