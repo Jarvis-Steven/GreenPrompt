@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=3" />
+  <link rel="stylesheet" href="style.css?v=7" />
 </head>
 <body>
   <header class="site-header">
@@ -19,7 +19,7 @@
       <a class="nav-link" href="#history" data-view="history">History</a>
       <a class="nav-link" href="#how-it-works" data-view="how">How it works</a>
     </nav>
-    <div class="header-actions">
+    <div class="header-actions"><span class="header-saving" id="header-saving" hidden><span class="header-saving-value" id="header-saving-value">0.00 Wh</span><span class="header-saving-label">saved this session</span></span>
       <button class="text-button" id="new-session-button" type="button">New session</button>
       <button class="icon-button" id="settings-button" type="button" aria-label="Settings" aria-expanded="false">⚙</button>
       <div class="settings-menu" id="settings-menu" hidden>
@@ -73,9 +73,9 @@
 
     <section class="how-section" id="how-it-works" aria-labelledby="how-title"><div class="page-heading"><p class="eyebrow">THE PROCESS</p><h2 id="how-title">How it works</h2><p>A small decision system built around proportionate AI use.</p></div><ol class="process-list"><li><span>1</span><h3>Analyze prompt</h3><p>Assess task difficulty and intent.</p></li><li><span>2</span><h3>Choose model</h3><p>Route to the appropriate tier.</p></li><li><span>3</span><h3>Generate answer</h3><p>Make the selected model call.</p></li><li><span>4</span><h3>Check quality</h3><p>Evaluate whether it meets the task.</p></li><li><span>5</span><h3>Escalate if needed</h3><p>Retry with more capability when required.</p></li><li><span>6</span><h3>Estimate impact</h3><p>Show the baseline comparison.</p></li></ol></section>
   </main>
-  <button class="matrix-launcher" id="matrix-launcher" type="button" aria-controls="model-matrix" aria-expanded="false" aria-label="Open workspace sidebar"><span aria-hidden="true">▯</span></button>
+  <button class="matrix-launcher insights-fab" id="matrix-launcher" type="button" aria-controls="model-matrix" aria-expanded="false" aria-label="Open request insights"><span class="fab-glyph" aria-hidden="true">◑</span><span class="fab-badge" id="insights-badge" hidden></span></button>
   <div class="drawer-scrim" id="drawer-scrim" hidden></div>
-  <aside class="matrix-drawer" id="model-matrix" aria-label="Workspace sidebar" aria-hidden="true">
+  <aside class="matrix-drawer" id="model-matrix" aria-label="Workspace sidebar" aria-hidden="true"><section class="drawer-section insights-live" aria-labelledby="insights-live-title"><div class="section-title"><h3 id="insights-live-title">Request insights</h3><span id="insights-mock" hidden>DEMO MOCK</span></div><p class="insights-empty" id="insights-empty">Send a prompt and the real routing path, quality check and resource estimates for that answer will appear here.</p><div id="insights-live" hidden><div class="insights-block" id="insights-path"></div><div class="insights-block" id="insights-quality"></div><div class="insights-block" id="insights-impact"></div><div class="insights-block" id="insights-overhead"></div><div class="insights-block" id="insights-summary"></div></div><p class="insights-note">Figures are estimates from per-tier assumptions, not measured energy.</p></section>
     <header class="drawer-header"><div><p class="eyebrow">WORKSPACE SIDEBAR</p><h2>Request insights</h2><p>Automatic routing and resource results from the latest backend response.</p></div><button class="drawer-close" id="matrix-close" type="button" aria-label="Close workspace sidebar">×</button></header>
     <section class="drawer-section resource-highlights" aria-labelledby="highlights-title"><div class="section-title"><h3 id="highlights-title">Resource impact</h3><span>BACKEND ESTIMATE</span></div><p>Compared with always using the Big tier. Figures are estimates from per-tier assumptions, not measured energy.</p><div class="highlight-grid"><article><span>Cost saved</span><strong id="highlight-cost">₹0.000</strong><small>Estimated</small></article><article><span>Energy reduction</span><strong id="highlight-energy">0.00 Wh</strong><small>Estimated</small></article><article><span>Water cooling saved</span><strong id="highlight-water">0.00 mL</strong><small>Estimated</small></article></div></section>
     <section class="drawer-section request-drawer"><div class="section-title"><h3>Routing &amp; quality</h3><span id="request-status">Waiting</span></div><div id="routing-content" class="placeholder-content"><p>Your latest request will appear here.</p></div></section>
@@ -90,6 +90,7 @@
   </aside>
   <div class="toast" id="toast" role="status" hidden></div>
   <script src="markdown.js?v=2"></script>
-  <script src="script.js?v=2"></script>
+  <script src="insights.js?v=2"></script>
+  <script src="script.js?v=3"></script>
 </body>
 </html>

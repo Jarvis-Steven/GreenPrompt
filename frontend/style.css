@@ -35,7 +35,7 @@ h3.md-h{font-size:17px}h4.md-h{font-size:15px}h5.md-h{font-size:14px}h6.md-h{fon
 /* Fenced code block */
 .md-code{border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:0 0 .85em;background:#fbfcfa}
 .md-code-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 10px;background:var(--secondary);border-bottom:1px solid var(--line)}
-.md-code-lang{font-size:10px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);font-weight:700}
+.md-code-lang{font-size:10px;letter-spacing:.6px;text-transform:uppercase;color:#56605a;font-weight:700}  /* darkened from var(--muted): 4.41 -> AA pass */
 .md-copy{border:1px solid var(--line);background:#fff;color:var(--ink);font-size:11px;padding:3px 9px;border-radius:5px;line-height:1.6}
 .md-copy:hover{border-color:var(--green);color:var(--dark-green)}
 .md-copy.copied{background:var(--soft-green);border-color:var(--green);color:var(--dark-green);font-weight:600}
@@ -72,3 +72,81 @@ h3.md-h{font-size:17px}h4.md-h{font-size:15px}h5.md-h{font-size:14px}h6.md-h{fon
 .md-body>*{max-width:100%}
 .md-code,.md-table-wrap,.md-pre{max-width:100%;min-width:0}
 .md-p,.md-list li,.md-quote,.md-h{overflow-wrap:anywhere}
+
+/* ===== PROPOSAL (frontend): insights FAB, panel content, header counter =====
+   Existing GreenPrompt tokens only. No new palette, no new fonts. */
+
+/* Floating round button: below the header, clear of nav and composer. */
+.insights-fab{position:fixed;top:84px;right:20px;left:auto;bottom:auto;transform:none;
+  width:52px;height:52px;border-radius:50%;padding:0;z-index:12;
+  background:var(--green);color:#fff;border:0;
+  box-shadow:0 6px 20px rgba(31,43,36,.22);display:flex;align-items:center;justify-content:center}
+.insights-fab:hover{background:var(--dark-green)}
+.insights-fab .fab-glyph{font-size:21px;line-height:1;margin:0;display:block;transform:none;color:#fff}
+.insights-fab .fab-badge{position:absolute;top:-8px;right:-10px;background:var(--ink);color:#fff;
+  font-size:10px;font-weight:700;letter-spacing:.2px;padding:3px 7px;border-radius:999px;
+  border:2px solid var(--bg);white-space:nowrap}
+.insights-fab .fab-badge.negative{background:var(--error)}
+/* The button is a small circle; nothing else is covered and clicks pass around it. */
+
+/* Slide-in. The drawer already positions itself; add the transition. */
+.matrix-drawer{transform:translateX(100%);transition:transform .26s ease}
+.matrix-drawer.open{transform:translateX(0)}
+
+/* Header live saving counter */
+.header-saving{display:inline-flex;flex-direction:column;align-items:flex-end;line-height:1.15;margin-right:6px}
+.header-saving-value{font-size:13px;font-weight:700;color:var(--dark-green);font-variant-numeric:tabular-nums}
+.header-saving-label{font-size:9px;color:var(--muted);letter-spacing:.3px}
+
+/* Panel content */
+.insights-live{padding-bottom:4px}
+.insights-empty{font-size:12px;color:var(--muted);margin:12px 0 0;line-height:1.6}
+.insights-note{font-size:10px;color:var(--muted);margin:14px 0 0;padding-top:10px;border-top:1px solid var(--line);line-height:1.5}
+.insights-block{margin-top:14px}
+.insights-block:empty{display:none}
+.insights-heading{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);
+  margin:14px 0 7px;font-weight:700}
+.insights-block>.insights-heading:first-child{margin-top:0}
+.insights-row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;font-size:12px;border-bottom:1px solid rgba(225,229,221,.6)}
+.insights-row:last-child{border-bottom:0}
+.insights-row span{color:var(--muted)}
+.insights-row strong{font-weight:600;font-variant-numeric:tabular-nums}
+.insights-reason{font-size:11px;color:var(--muted);margin:6px 0 0;line-height:1.55}
+.insights-attempts{margin-top:9px;display:grid;gap:8px}
+.insights-attempt{border-left:3px solid var(--small);padding:5px 0 5px 9px}
+.insights-attempt.is-error{border-left-color:var(--error)}
+.insights-attempt strong{display:block;font-size:11.5px;font-weight:600}
+.insights-attempt small{font-size:10px;color:var(--muted)}
+.quality-passed{color:#2c6b42!important}
+.quality-failed{color:#a03434!important}
+.quality-unchecked{color:#5c665e!important}
+#insights-mock{background:#8a4b12;color:#fff;font-weight:700;padding:2px 7px;border-radius:4px;font-size:9px;letter-spacing:.4px}
+
+/* "What happened" strip under an answer */
+.what-happened{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:10px;
+  background:transparent;border:0;padding:0;text-align:left;width:100%}
+.wh-chip{font-size:10px;color:#4a564e;background:var(--secondary);border:1px solid var(--line);
+  padding:2px 7px;border-radius:999px;text-transform:capitalize}
+.wh-chip.wh-saving{background:var(--soft-green);border-color:#bcd7bd;color:#265c3c}
+.wh-chip.negative{background:#fdeeee;border-color:#eccaca;color:#8f3030}
+.what-happened:hover .wh-chip{border-color:#b9c6ba}
+
+@media (prefers-reduced-motion: reduce){
+  .matrix-drawer{transition:none}
+}
+
+/* Mobile: full-width bottom sheet */
+@media (max-width:600px){
+  .insights-fab{top:auto;bottom:88px;right:14px;width:48px;height:48px}
+  .matrix-drawer{position:fixed;left:0;right:0;bottom:0;top:auto;width:100vw;max-height:82vh;
+    border-radius:16px 16px 0 0;transform:translateY(100%);overflow-y:auto}
+  .matrix-drawer.open{transform:translateY(0)}
+  .insights-row{font-size:12.5px}
+}
+
+/* The pre-existing stylesheet also defines .matrix-drawer.open{transform:translateX(0)}.
+   Media queries do not raise specificity, so the mobile sheet needs the id to win. */
+@media (max-width:600px){
+  aside#model-matrix.matrix-drawer{transform:translateY(100%)}
+  aside#model-matrix.matrix-drawer.open{transform:translateY(0)}
+}
