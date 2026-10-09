@@ -38,6 +38,33 @@ function gpMetricRows(target, metrics) {
   target.append(gpRow('Cost', `₹${gpNum(metrics.cost_inr, 3)}`));
 }
 
+/* One table instead of repeating four measures per section.
+   Columns: what this request cost, and what it saved against always-Big. */
+function gpMetricTable(impact, savings) {
+  const rows = [
+    ['Energy', (m) => `${gpNum(m.energy_wh, 2)} Wh`, 'energy_wh'],
+    ['CO2', (m) => `${gpNum(m.co2_g, 3)} g`, 'co2_g'],
+    ['Water', (m) => `${gpNum(m.water_ml, 2)} mL`, 'water_ml'],
+    ['Cost', (m) => `₹${gpNum(m.cost_inr, 3)}`, 'cost_inr'],
+  ];
+  const table = gpEl('table', 'insights-table');
+  const head = document.createElement('tr');
+  head.append(gpEl('th', '', ''), gpEl('th', '', 'This request'), gpEl('th', '', 'Saved'));
+  table.append(head);
+  for (const [label, fmt, key] of rows) {
+    const tr = document.createElement('tr');
+    tr.append(gpEl('td', 'insights-measure', label));
+    tr.append(gpEl('td', '', impact ? fmt(impact) : '—'));
+    const saved = savings ? savings[key] : null;
+    const cell = gpEl('td', Number.isFinite(saved) && saved < 0 ? 'negative' : 'saved',
+      savings ? `${Number.isFinite(saved) && saved >= 0 ? '+' : ''}${fmt(savings)}` : '—');
+    tr.append(cell);
+    table.append(tr);
+  }
+  return table;
+}
+
+
 /* ---------- the panel ---------- */
 function renderInsights(data) {
   const live = document.getElementById('insights-live');
@@ -79,29 +106,22 @@ function renderInsights(data) {
   quality.append(gpRow('Status', status, `quality-${status}`));
   if (data.quality?.reason) quality.append(gpEl('p', 'insights-reason', data.quality.reason));
 
-  // Impact + savings
+  // Impact + savings as ONE table: four measures, two columns.
   const impact = document.getElementById('insights-impact');
-  impact.replaceChildren(gpHeading('This request'));
-  gpMetricRows(impact, data.impact);
-  impact.append(gpHeading('Saved vs always-Big'));
-  const savings = data.savings || {};
-  impact.append(gpRow('Energy', `${gpNum(savings.energy_wh, 2)} Wh`,
-    savings.energy_wh < 0 ? 'negative' : ''));
-  impact.append(gpRow('CO2', `${gpNum(savings.co2_g, 3)} g`, savings.co2_g < 0 ? 'negative' : ''));
-  impact.append(gpRow('Water', `${gpNum(savings.water_ml, 2)} mL`,
-    savings.water_ml < 0 ? 'negative' : ''));
-  impact.append(gpRow('Cost', `₹${gpNum(savings.cost_inr, 3)}`,
-    savings.cost_inr < 0 ? 'negative' : ''));
+  impact.replaceChildren(gpHeading('Estimated impact'));
+  impact.append(gpMetricTable(data.impact, data.savings));
 
   // Classifier overhead — optional, drawn only when the backend sent it
   const overhead = document.getElementById('insights-overhead');
   overhead.replaceChildren();
   if (data.classifier_overhead) {
-    overhead.append(gpHeading('Classifier overhead (estimated)'));
-    gpMetricRows(overhead, data.classifier_overhead);
-    if (data.impact_including_classifier) {
-      overhead.append(gpHeading('Impact including classifier'));
-      gpMetricRows(overhead, data.impact_including_classifier);
+    const o = data.classifier_overhead;
+    const withIt = data.impact_including_classifier;
+    overhead.append(gpRow('Classifier overhead (est.)',
+      `${gpNum(o.energy_wh, 2)} Wh · ₹${gpNum(o.cost_inr, 3)}`));
+    if (withIt) {
+      overhead.append(gpRow('Total incl. classifier',
+        `${gpNum(withIt.energy_wh, 2)} Wh · ₹${gpNum(withIt.cost_inr, 3)}`));
     }
   }
 
@@ -109,16 +129,14 @@ function renderInsights(data) {
   const summary = document.getElementById('insights-summary');
   summary.replaceChildren(gpHeading('This session'));
   const s = data.summary || {};
-  summary.append(gpRow('Prompts', String(s.total_prompts ?? '—')));
-  summary.append(gpRow('Answered by Small',
-    Number.isFinite(s.small_model_percentage) ? `${s.small_model_percentage.toFixed(0)}%` : '—'));
-  summary.append(gpRow('Escalations', String(s.escalations ?? '—')));
   const cumulative = s.cumulative_savings;
+  summary.append(gpRow('Prompts',
+    `${s.total_prompts ?? '—'} · ${Number.isFinite(s.small_model_percentage)
+      ? s.small_model_percentage.toFixed(0) : '—'}% on Small · ${s.escalations ?? '—'} escalated`));
   if (cumulative) {
-    summary.append(gpRow('Energy saved', `${gpNum(cumulative.energy_wh, 2)} Wh`,
+    summary.append(gpRow('Saved so far',
+      `${gpNum(cumulative.energy_wh, 2)} Wh · ₹${gpNum(cumulative.cost_inr, 3)}`,
       cumulative.energy_wh < 0 ? 'negative' : ''));
-    summary.append(gpRow('Cost saved', `₹${gpNum(cumulative.cost_inr, 3)}`,
-      cumulative.cost_inr < 0 ? 'negative' : ''));
   }
 
   updateInsightsBadge(data);
@@ -166,9 +184,11 @@ function buildWhatHappened(data) {
   strip.setAttribute('aria-label', 'Open request insights for this answer');
   const status = data.quality?.status || 'unchecked';
   const add = (text, cls) => strip.append(gpEl('span', `wh-chip ${cls || ''}`, text));
-  add(gpTier(data.difficulty));
+  // The tier and model already appear in the meta line above, so the strip
+  // carries only what is NOT shown there.
+  add(`${gpTier(data.difficulty)} prompt`);
   add((data.classifier && data.classifier.used) ? 'classifier used' : 'rules only');
-  add(`${gpTier(data.initial_model)} → ${gpTier(data.final_model)}`);
+  if (data.escalated) add(`escalated to ${gpTier(data.final_model)}`, 'wh-escalated');
   add(status, `wh-quality quality-${status}`);
   const saved = data.savings?.energy_wh;
   if (Number.isFinite(saved)) {
@@ -207,3 +227,25 @@ function gpRememberFocus(open) {
 }
 
 document.addEventListener('keydown', gpTrapFocus);
+
+
+/* Meta line under an answer. Shows the REAL model name, and only mentions a
+   path when the request actually escalated - no more "Medium Medium Medium". */
+function buildAnswerMeta(response) {
+  const attempts = response.attempts || [];
+  const producing = [...attempts].reverse()
+    .find(a => a.tier === response.final_model && a.status === 'success') || attempts.at(-1) || {};
+  const quality = response.quality?.status || 'unchecked';
+  const qualityText = quality === 'passed' ? 'Passed'
+    : quality === 'failed' ? 'Failed' : 'Not checked';
+
+  const pairs = [[`${gpTier(producing.tier || response.final_model)} · ${producing.model_name || '—'}`,
+                  'Answered by']];
+  if (response.escalated && attempts.length > 1) {
+    // Every attempt, so an escalation shows what was tried and what replaced it.
+    pairs.push([attempts.map(a => `${gpTier(a.tier)} · ${a.model_name}`
+      + (a.status === 'error' ? ' (failed)' : '')).join('  →  '), 'Path']);
+  }
+  pairs.push([qualityText, 'Quality']);
+  return pairs;
+}

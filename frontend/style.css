@@ -197,3 +197,18 @@ aside#model-matrix.matrix-drawer.open{transform:translateX(0)}
 @media (max-width:600px){
   aside#model-matrix.matrix-drawer.open{transform:translateY(0)!important}
 }
+
+/* Compact metrics table (replaces the repeated four-row blocks). */
+.insights-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+.insights-table th{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);
+  font-weight:700;text-align:right;padding:0 0 6px;background:transparent;border:0}
+.insights-table th:first-child{text-align:left}
+.insights-table td{padding:5px 0;border-bottom:1px solid rgba(225,229,221,.6);text-align:right;
+  font-variant-numeric:tabular-nums;font-weight:600}
+.insights-table tr:last-child td{border-bottom:0}
+.insights-table .insights-measure{text-align:left;color:var(--muted);font-weight:400}
+.insights-table .saved{color:#2c6b42}
+.insights-table .negative{color:#a03434}
+.wh-chip.wh-escalated{background:#fdf2e6;border-color:#e8d2b0;color:#7a4b12}
+/* The meta line can hold a long model id; let it wrap instead of overflowing. */
+.message-meta .meta{white-space:normal;overflow-wrap:anywhere}
